@@ -73,6 +73,26 @@ class Backgammon(core.Env):
     def _observe(self, state: core.State, player_id: Array) -> Array:
         assert isinstance(state, State)
         return _observe(state, player_id)
+    
+    def set_dice(self, state: State, dice: Array) -> State:
+        """
+            Use for setting the dice for testing or using external dice
+            dice is a 2 digit array 0-5 , 0 for 1 , 1 for 2, etc
+        """
+        playable_dice: Array = _set_playable_dice(dice)
+        played_dice_num: Array = jnp.int32(0)
+        legal_action_mask: Array = _legal_action_mask(state._board, dice)
+        return state.replace(  # type: ignore
+            current_player=state.current_player,
+            _board=state._board,
+            terminated=state.terminated,
+            _turn=state._turn,
+            _dice=dice,
+            _playable_dice=playable_dice,
+            _played_dice_num=played_dice_num,
+            legal_action_mask=legal_action_mask,
+        )
+        
 
     @property
     def id(self) -> core.EnvId:
