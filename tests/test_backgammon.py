@@ -634,3 +634,143 @@ def test_api():
     import pgx
     env = pgx.make("backgammon")
     _api_test_single_modified(env, 3, use_key=True)  # Only run single environment test
+
+def test_stochastic_state():
+    """Test if a state is correctly identified as stochastic."""
+    env = Backgammon()
+    state: State = env.init(jax.random.PRNGKey(0))  # type: ignore
+    
+    # New game state should be stochastic (needs dice)
+    assert state.is_stochastic  # type: ignore
+    
+    # After a stochastic step, it should no longer be stochastic
+    stochastic_action = 0  # Using double 1's (action 0)
+    new_state: State = env.stochastic_step(state, jnp.array(stochastic_action))  # type: ignore
+    assert not new_state.is_stochastic  # type: ignore
+    
+    # After a regular move and turn change, it should be stochastic again
+    legal_action = jnp.where(new_state.legal_action_mask)[0][0]
+    moved_state: State = env.step(new_state, legal_action, jax.random.PRNGKey(1))  # type: ignore
+    
+    # If the move ended the turn, it should be stochastic again
+    # We need to check if the turn actually changed
+    if moved_state._turn != new_state._turn:  # type: ignore
+        assert moved_state.is_stochastic  # type: ignore
+
+
+def test_stochastic_actions():
+    """Test getting available stochastic actions and their probabilities."""
+    env = Backgammon()
+    state: State = env.init(jax.random.PRNGKey(0))  # type: ignore
+    
+    # For regular mode, all 21 dice combinations should be possible
+    assert len(env._stochastic_action_probs) == 21
+    
+    # Test that probabilities sum to 1
+    assert jnp.isclose(jnp.sum(env._stochastic_action_probs), 1.0)
+    
+    # Test simple doubles mode
+    env_simple = Backgammon(simple_doubles=True)
+    assert len(env_simple._stochastic_action_probs) == 21
+    
+    # In simple doubles mode, only the first 6 actions (doubles) have non-zero probability
+    assert jnp.all(env_simple._stochastic_action_probs[6:] == 0)
+    assert jnp.isclose(jnp.sum(env_simple._stochastic_action_probs), 1.0)
+
+
+def test_stochastic_step():
+    """Test applying a stochastic action to set dice."""
+    env = Backgammon()
+    state: State = env.init(jax.random.PRNGKey(0))  # type: ignore
+    
+    # Apply stochastic action 0 (double 1's)
+    stochastic_action = 0
+    new_state: State = env.stochastic_step(state, jnp.array(stochastic_action))  # type: ignore
+    
+    # Check that dice are set correctly
+    assert jnp.array_equal(new_state._dice, jnp.array([0, 0]))  # type: ignore
+    
+    # Check that state is no longer stochastic
+    assert not new_state.is_stochastic  # type: ignore
+    
+    # Check that playable dice are set correctly for doubles (4 dice of the same value)
+    assert jnp.array_equal(new_state._playable_dice, jnp.array([0, 0, 0, 0]))  # type: ignore
+    
+    # Apply stochastic action 10 (1,6)
+    stochastic_action = 10
+    new_state = env.stochastic_step(state, jnp.array(stochastic_action))  # type: ignore
+    
+    # Check that dice are set correctly
+    assert jnp.array_equal(new_state._dice, jnp.array([0, 5]))  # type: ignore
+    
+    # Check that playable dice are set correctly for non-doubles (2 dice)
+    assert jnp.array_equal(new_state._playable_dice, jnp.array([0, 5, -1, -1]))  # type: ignore
+
+
+def test_stochastic_simple_doubles():
+    """Test stochastic functionality in simple_doubles mode."""
+    env = Backgammon(simple_doubles=True)
+    state: State = env.init(jax.random.PRNGKey(0))  # type: ignore
+    
+    # In simple doubles mode, only double actions (0-5) should work
+    
+    # Test double action (action 0 = double 1's)
+    stochastic_action = 0
+    new_state: State = env.stochastic_step(state, jnp.array(stochastic_action))  # type: ignore
+    assert jnp.array_equal(new_state._dice, jnp.array([0, 0]))  # type: ignore
+    assert not new_state.is_stochastic  # type: ignore
+    
+    # Test non-double action (action 10 = 1,6)
+    # In simple doubles mode, non-double actions should be ignored
+    # and state should remain stochastic
+    stochastic_action = 10
+    original_dice = state._dice.copy()  # type: ignore
+    new_state = env.stochastic_step(state, jnp.array(stochastic_action))  # type: ignore
+    
+    # Check that dice are unchanged for non-double action
+    assert jnp.array_equal(new_state._dice, original_dice)  # type: ignore
+    
+    # State should still be stochastic since the action was ignored
+    assert new_state.is_stochastic  # type: ignore
+
+def test_stochastic_game_simulation():
+    """Test simulating a game with predefined dice rolls."""
+    # Create game environment
+    env = Backgammon()
+    
+    # Initialize game
+    state: State = env.init(jax.random.PRNGKey(42))  # type: ignore
+    
+    # Instead of random dice, we want to control the dice rolls
+    # Let's simulate a short game with predefined dice
+    
+    # Test roll: 1,6 (action index 10)
+    assert state.is_stochastic  # type: ignore
+    state = env.stochastic_step(state, jnp.array(10))  # type: ignore
+    assert not state.is_stochastic  # type: ignore
+    assert jnp.array_equal(state._dice, jnp.array([0, 5]))  # type: ignore
+    
+    # Make a move using the first die
+    legal_action = jnp.where(state.legal_action_mask)[0][0]
+    state = env.step(state, legal_action, jax.random.PRNGKey(0))  # type: ignore
+    
+    # Make another move if the turn hasn't changed
+    if state.is_stochastic:  # type: ignore
+        # Turn has changed, and we need new dice
+        # Let's roll doubles: 3,3 (action index 2)
+        state = env.stochastic_step(state, jnp.array(2))  # type: ignore
+        assert jnp.array_equal(state._dice, jnp.array([2, 2]))  # type: ignore
+    else:
+        # Make a move with the second die
+        legal_action = jnp.where(state.legal_action_mask)[0][0]
+        state = env.step(state, legal_action, jax.random.PRNGKey(1))  # type: ignore
+        
+        # Now the turn has likely changed, and we need new dice
+        if state.is_stochastic:  # type: ignore
+            # Let's roll 1,2 (action index 6)
+            state = env.stochastic_step(state, jnp.array(6))  # type: ignore
+            assert jnp.array_equal(state._dice, jnp.array([0, 1]))  # type: ignore
+    
+    # Verify we can continue making moves
+    assert not state.terminated
+    assert state.legal_action_mask.any()  # There should be legal actions available

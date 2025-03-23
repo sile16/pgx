@@ -14,6 +14,7 @@
 
 from functools import partial
 from typing import Optional
+import dataclasses
 
 import jax
 import jax.numpy as jnp
@@ -49,6 +50,15 @@ class State(core.State):
     def env_id(self) -> core.EnvId:
         return "backgammon"
 
+    @property
+    def is_stochastic(self) -> Array:
+        """Whether the state is in stochastic mode."""
+        return self._is_stochastic
+
+    def replace(self, **kwargs) -> "State":
+        """Create a new state with updated fields."""
+        return dataclasses.replace(self, **kwargs)
+
 
 class Backgammon(core.Env):
     def __init__(self, simple_doubles: bool = False):
@@ -82,8 +92,8 @@ class Backgammon(core.Env):
     
     def set_dice(self, state: State, dice: Array) -> State:
         """
-            Use for setting the dice for testing or using external dice
-            dice is a 2 digit array 0-5 , 0 for 1 , 1 for 2, etc
+        Use for setting the dice for testing or using external dice.
+        dice is a 2 digit array 0-5, 0 for 1, 1 for 2, etc.
         """
         playable_dice: Array = _set_playable_dice(dice)
         played_dice_num: Array = jnp.int32(0)
@@ -98,7 +108,28 @@ class Backgammon(core.Env):
             _played_dice_num=played_dice_num,
             legal_action_mask=legal_action_mask,
         )
+    
+    def stochastic_step(self, state: State, action: Array) -> State:
+        """
+        Handle a stochastic step (dice roll) for programs that want to control dice rolls.
+        This is separate from the regular step function to maintain backward compatibility.
         
+        Args:
+            state: Current game state
+            action: Index into _STOCHASTIC_DICE_MAPPING (0-20) representing the dice roll
+            
+        Returns:
+            New state with dice set and _is_stochastic set to False
+        """
+        # In simple doubles mode, only allow double actions (0-5)
+        if self.simple_doubles and action >= 6:
+            # Return the current state without changes if non-double action in simple doubles mode
+            return state
+        
+        # Get the dice roll from the mapping
+        roll = _STOCHASTIC_DICE_MAPPING[action]
+        new_state = self.set_dice(state, roll)
+        return new_state.replace(_is_stochastic=FALSE)  # after setting the dice, we are no longer stochastic
 
     @property
     def id(self) -> core.EnvId:
@@ -561,23 +592,6 @@ def _get_abs_board(state: State) -> Array:
     board: Array = state._board
     turn: Array = state._turn
     return jax.lax.cond(turn == 0, lambda: board, lambda: _flip_board(board))
-
-def stochastic_step(self, state: State, action: Array) -> State:
-        """
-        Handle a stochastic step (dice roll) for programs that want to control dice rolls.
-        This is separate from the regular step function to maintain backward compatibility.
-        
-        Args:
-            state: Current game state
-            action: Index into _STOCHASTIC_DICE_MAPPING (0-20) representing the dice roll
-            
-        Returns:
-            New state with dice set and needs_dice set to False
-        """
-        # Get the dice roll from the mapping
-        roll = _STOCHASTIC_DICE_MAPPING[action]
-        new_state = self.set_dice(state, roll)
-        return newstate.replace(_is_stochastic=FALSE)  # after setting the dice, we are no longer stochastic
 
 # Pre-computed probability distribution for dice rolls
 # First 6 indices are doubles (1,1 2,2 3,3 4,4 5,5 6,6) with probability 1/36
