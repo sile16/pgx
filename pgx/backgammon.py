@@ -43,6 +43,7 @@ class State(core.State):
     _playable_dice: Array = jnp.zeros(4, dtype=jnp.int32)  # playable dice -1 for empty
     _played_dice_num: Array = jnp.int32(0)  # the number of dice played
     _turn: Array = jnp.int32(1)  # black: 0 white:1
+    _is_stochastic: Array = TRUE  # whether the state is in stochastic mode
 
     @property
     def env_id(self) -> core.EnvId:
@@ -50,8 +51,13 @@ class State(core.State):
 
 
 class Backgammon(core.Env):
-    def __init__(self):
+    def __init__(self, simple_doubles: bool = False):
         super().__init__()
+        self.simple_doubles = simple_doubles
+        self._stochastic_action_probs = (
+            _STOCHASTIC_SIMPLE_DOUBLES_ACTION_PROBS if simple_doubles 
+            else _STOCHASTIC_ACTION_PROBS
+        )
 
     def step(self, state: core.State, action: Array, key: Optional[Array] = None) -> core.State:
         assert key is not None, (
@@ -130,6 +136,7 @@ def _init(rng: PRNGKey) -> State:
         _played_dice_num=played_dice_num,
         _turn=turn,
         legal_action_mask=legal_action_mask,
+        _is_stochastic=TRUE, #initial state is stochastic, as it requires a dice roll
     )
     return state
 
@@ -281,6 +288,7 @@ def _change_turn(state: State, key) -> State:
         _playable_dice=playable_dice,
         _played_dice_num=played_dice_num,
         legal_action_mask=legal_action_mask,
+        _is_stochastic=TRUE, #after a player change it's a stochastic state
     )
 
 
@@ -553,3 +561,77 @@ def _get_abs_board(state: State) -> Array:
     board: Array = state._board
     turn: Array = state._turn
     return jax.lax.cond(turn == 0, lambda: board, lambda: _flip_board(board))
+
+def stochastic_step(self, state: State, action: Array) -> State:
+        """
+        Handle a stochastic step (dice roll) for programs that want to control dice rolls.
+        This is separate from the regular step function to maintain backward compatibility.
+        
+        Args:
+            state: Current game state
+            action: Index into _STOCHASTIC_DICE_MAPPING (0-20) representing the dice roll
+            
+        Returns:
+            New state with dice set and needs_dice set to False
+        """
+        # Get the dice roll from the mapping
+        roll = _STOCHASTIC_DICE_MAPPING[action]
+        new_state = self.set_dice(state, roll)
+        return newstate.replace(_is_stochastic=FALSE)  # after setting the dice, we are no longer stochastic
+
+# Pre-computed probability distribution for dice rolls
+# First 6 indices are doubles (1,1 2,2 3,3 4,4 5,5 6,6) with probability 1/36
+# Remaining indices are non-doubles with probability 2/36
+_STOCHASTIC_ACTION_PROBS = jnp.array([
+    # Doubles (1/36 each)
+    1/36,  # 1,1
+    1/36,  # 2,2
+    1/36,  # 3,3
+    1/36,  # 4,4
+    1/36,  # 5,5
+    1/36,  # 6,6
+    # Non-doubles (2/36 each)
+    2/36, 2/36, 2/36, 2/36, 2/36,  # 1,2 1,3 1,4 1,5 1,6
+    2/36, 2/36, 2/36, 2/36,        # 2,3 2,4 2,5 2,6
+    2/36, 2/36, 2/36,              # 3,4 3,5 3,6
+    2/36, 2/36,                    # 4,5 4,6
+    2/36,                          # 5,6
+], dtype=jnp.float32)
+
+# Pre-computed probability distribution for dice rolls
+# First 6 indices are doubles (1,1 2,2 3,3 4,4 5,5 6,6) with probability 1/36
+# Remaining indices are non-doubles with probability 2/36
+_STOCHASTIC_SIMPLE_DOUBLES_ACTION_PROBS = jnp.array([
+    # Doubles (1/36 each)
+    1/6,  # 1,1
+    1/6,  # 2,2
+    1/6,  # 3,3
+    1/6,  # 4,4
+    1/6,  # 5,5
+    1/6,  # 6,6
+    # Non-doubles (2/36 each)
+    0, 0, 0, 0, 0,  # 1,2 1,3 1,4 1,5 1,6
+    0, 0, 0, 0,     # 2,3 2,4 2,5 2,6
+    0, 0, 0,        # 3,4 3,5 3,6
+    0, 0,           # 4,5 4,6
+    0,              # 5,6
+], dtype=jnp.float32)
+
+# Static mapping of action indices to dice rolls
+# First 6 are doubles (1,1 to 6,6)
+# Remaining 15 are non-doubles in order (1,2 to 5,6)
+_STOCHASTIC_DICE_MAPPING = jnp.array([
+    # Doubles
+    [0, 0],  # 1,1
+    [1, 1],  # 2,2
+    [2, 2],  # 3,3
+    [3, 3],  # 4,4
+    [4, 4],  # 5,5
+    [5, 5],  # 6,6
+    # Non-doubles
+    [0, 1], [0, 2], [0, 3], [0, 4], [0, 5],  # 1,2 1,3 1,4 1,5 1,6
+    [1, 2], [1, 3], [1, 4], [1, 5],          # 2,3 2,4 2,5 2,6
+    [2, 3], [2, 4], [2, 5],                  # 3,4 3,5 3,6
+    [3, 4], [3, 5],                          # 4,5 4,6
+    [4, 5],                                  # 5,6
+], dtype=jnp.int32)
