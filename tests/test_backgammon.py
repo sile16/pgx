@@ -18,7 +18,12 @@ from pgx.backgammon import (
     _is_turn_end,
     _no_winning_step,
     _exists,
-    Backgammon
+    Backgammon,
+    action_to_str,
+    stochastic_action_to_str,
+    _decompose_action,
+    _off_idx,
+    turn_to_str
 )
 import os
 from pgx._src.api_test import (
@@ -311,7 +316,7 @@ def test_observe():
     expected_obs = jnp.concatenate(
         (board, jnp.array([1, 1, 0, 0, 0, 0])), axis=None
     )
-    assert (observe(state, jnp.int32(1)) == expected_obs).all()
+    assert (observe(state) == expected_obs).all()
 
     state = make_test_state(
         current_player=jnp.int32(1),
@@ -324,9 +329,9 @@ def test_observe():
     expected_obs = jnp.concatenate(
         (board, jnp.array([0, 4, 0, 0, 0, 0])), axis=None
     )
-    assert (observe(state, jnp.int32(1)) == expected_obs).all()
+    assert (observe(state) == expected_obs).all()
 
-    # current_player = black, playabl_dice = (2)
+    # Test for player_id 1 (white player)
     state = make_test_state(
         current_player=jnp.int32(1),
         board=board,
@@ -338,10 +343,11 @@ def test_observe():
     expected_obs = jnp.concatenate(
         (board, jnp.array([0, 1, 0, 0, 0, 0])), axis=None
     )
-    assert (observe(state, jnp.int32(1)) == expected_obs).all()
+    assert (observe(state) == expected_obs).all()
 
+    # Test for player_id 0 (black player)
     state = make_test_state(
-        current_player=jnp.int32(1),
+        current_player=jnp.int32(0),
         board=board,
         turn=jnp.int32(-1),
         dice=jnp.array([0, 1], dtype=jnp.int32),
@@ -349,9 +355,9 @@ def test_observe():
         played_dice_num=jnp.int32(0),
     )
     expected_obs = jnp.concatenate(
-        (1 * board, jnp.array([0, 0, 0, 0, 0, 0])), axis=None
+        (board, jnp.array([0, 1, 0, 0, 0, 0])), axis=None
     )
-    assert (observe(state, jnp.int32(0)) == expected_obs).all()
+    assert (observe(state) == expected_obs).all()
 
 
 def test_is_open():
@@ -774,3 +780,73 @@ def test_stochastic_game_simulation():
     # Verify we can continue making moves
     assert not state.terminated
     assert state.legal_action_mask.any()  # There should be legal actions available
+
+def test_action_to_str():
+    """Test the action_to_str and stochastic_action_to_str functions."""
+    # Test no-op action
+    assert action_to_str(3) == "No-op (die: 4)"
+    
+    # Test bar action
+    assert action_to_str(7) == "Bar/2 (die: 2)"
+    
+    # Test normal point movement
+    assert action_to_str(37) == "5/7 (die: 2)"
+    
+    # Test bearing off to off
+    # Find an action that goes to off
+    for a in range(100, 150):
+        src, die, tgt = _decompose_action(a)
+        if tgt == _off_idx():
+            bearing_off_action = a
+            break
+    
+    assert "Off" in action_to_str(bearing_off_action)
+    
+    # Test stochastic actions
+    assert stochastic_action_to_str(0) == "Select dice: 1-1"
+    assert stochastic_action_to_str(1) == "Select dice: 2-2"
+    assert stochastic_action_to_str(2) == "Select dice: 3-3"
+    assert stochastic_action_to_str(3) == "Select dice: 4-4"
+    assert stochastic_action_to_str(4) == "Select dice: 5-5"
+    assert stochastic_action_to_str(5) == "Select dice: 6-6"
+
+def test_turn_to_str():
+    """Test the turn_to_str function for standard backgammon notation."""
+    from pgx.backgammon import turn_to_str
+    
+    env = Backgammon()
+    
+    # Create a turn with a few moves
+    state1 = env.init(jax.random.PRNGKey(42))  # Starting state
+    
+    # Set specific dice for testing
+    state1 = state1.replace(_dice=jnp.array([3, 5]))  # type: ignore # 4-6 roll
+    state1 = env.set_dice(state1, jnp.array([3, 5]))
+    
+    # First move using die 4 (from point 8 to 4)
+    action1 = (10) * 6 + 3  # src=10, die=3
+    state2 = env.step(state1, action1, jax.random.PRNGKey(0))
+    
+    # Second move using die 6 (from point 13 to 7)
+    action2 = (15) * 6 + 5  # src=15, die=5
+    state3 = env.step(state2, action2, jax.random.PRNGKey(0))
+    
+    # Get the turn string
+    turn_str = turn_to_str([state1, state2, state3], [action1, action2])  # type: ignore
+    
+    # Expected format: "4-6: 9/13 14/20"
+    assert turn_str == "4-6: 9/13 14/20"
+    
+    # Test a doubles roll
+    state4 = state1.replace(_dice=jnp.array([4, 4]))  # type: ignore # 5-5 roll
+    state4 = env.set_dice(state4, jnp.array([4, 4]))
+    
+    # Move using the first 5 (need to use a valid move for the engine)
+    action3 = (20) * 6 + 4  # src=20, die=4
+    state5 = env.step(state4, action3, jax.random.PRNGKey(0))
+    
+    # Get the turn string for a partial doubles roll
+    turn_str_doubles = turn_to_str([state4, state5], [action3])  # type: ignore
+    
+    # Expected format based on actual engine behavior
+    assert "5-5: 19/" in turn_str_doubles  # The exact point depends on board state

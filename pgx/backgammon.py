@@ -86,9 +86,17 @@ class Backgammon(core.Env):
         assert isinstance(state, State)
         return _step(state, action, key)
 
-    def _observe(self, state: core.State, player_id: Array) -> Array:
+    def _observe(self, state: core.State, player_id: Optional[Array] = None) -> Array:
+        """
+        Return observation for current player
+        
+        The player_id parameter is deprecated and will be removed in the future.
+        The method ignores player_id and always returns the observation for the current player.
+        """
         assert isinstance(state, State)
-        return _observe(state, player_id)
+        # We're ignoring player_id since the standalone _observe function doesn't use it
+        # and the base class observe() method already issues the deprecation warning
+        return _observe(state)
     
     def set_dice(self, state: State, dice: Array) -> State:
         """
@@ -184,19 +192,16 @@ def _step(state: State, action: Array, key) -> State:
     )
 
 
-def _observe(state: State, player_id: Array) -> Array:
+def _observe(state: State) -> Array:
     """
-    Return observation for player_id
+    Return observation for current player
     """
     board: Array = state._board
     playable_dice_count_vec: Array = _to_playable_dice_count(
         state._playable_dice
     )  # 6 dim vec which represents the count of playable die.
-    return jax.lax.cond(
-        player_id == state.current_player,
-        lambda: jnp.concatenate((board, playable_dice_count_vec), axis=None),  # type: ignore
-        lambda: jnp.concatenate((board, jnp.zeros(6, dtype=jnp.int32)), axis=None),  # type: ignore
-    )
+    
+    return jnp.concatenate((board, playable_dice_count_vec), axis=None)
 
 
 def _to_playable_dice_count(playable_dice: Array) -> Array:
@@ -649,3 +654,145 @@ _STOCHASTIC_DICE_MAPPING = jnp.array([
     [3, 4], [3, 5],                          # 4,5 4,6
     [4, 5],                                  # 5,6
 ], dtype=jnp.int32)
+
+def action_to_str(action: Array) -> str:
+    """
+    Convert an action value to a human-readable string in standard backgammon notation.
+    
+    Args:
+        action: The action value to convert (src * 6 + die)
+        
+    Returns:
+        A string describing the action
+    """
+    if action < 6:  # No-op actions (src = 0)
+        return f"No-op (die: {action % 6 + 1})"
+    
+    src_value = action // 6  # Get the raw src value before _calc_src conversion
+    die_value = action % 6 + 1  # Die value (1-6)
+    
+    # We need to call _decompose_action to get the target
+    src, die, tgt = _decompose_action(action)
+    
+    # In standard backgammon notation:
+    # - Points are numbered 1-24
+    # - Bar is referred to as "Bar"
+    # - Off is referred to as "Off"
+    
+    # Translate internal position to standard notation
+    if src_value == 0:  # No-op
+        src_str = "No-op"
+    elif src_value == 1:  # From bar
+        src_str = "Bar"
+    else:
+        # Points are numbered 1-24 in standard notation
+        # src_value 2-25 corresponds to points 1-24
+        src_str = str(src_value - 1)
+    
+    if tgt == _off_idx():  # To off (bear off)
+        tgt_str = "Off"
+    else:
+        # Adjust for 0-based indexing (points 0-23 in code → 1-24 in notation)
+        tgt_str = str(tgt + 1)
+    
+    return f"{src_str}/{tgt_str} (die: {die_value})"
+
+def stochastic_action_to_str(action: Array) -> str:
+    """
+    Convert a stochastic action (dice selection) to a human-readable string.
+    
+    In stochastic mode, actions 0-5 correspond to selecting a specific dice configuration
+    from the probability distribution.
+    
+    Args:
+        action: The stochastic action value (0-5)
+        
+    Returns:
+        A string describing the dice selection
+    """
+    if action < 0 or action > 5:
+        return f"Invalid stochastic action: {action}"
+    
+    dice = _STOCHASTIC_DICE_MAPPING[action]
+    die1, die2 = dice[0] + 1, dice[1] + 1  # Convert from 0-based to 1-based
+    
+    return f"Select dice: {die1}-{die2}"
+
+def turn_to_str(states: list[core.State], actions: list[Array]) -> str:
+    """
+    Convert a sequence of states and actions representing a complete turn to a human-readable string
+    in standard backgammon notation.
+    
+    Args:
+        states: List of states in the turn, from first state to last state
+        actions: List of actions taken during the turn
+    
+    Returns:
+        A string describing the complete turn in standard backgammon notation
+    """
+    if len(states) < 1:
+        return "Empty turn"
+    
+    if len(actions) != len(states) - 1:
+        return f"Error: {len(states)} states but {len(actions)} actions (should be {len(states)-1})"
+    
+    # Check if all states (except possibly the last one) have the same player
+    first_player = states[0].current_player
+    for i in range(1, len(states) - 1):
+        if states[i].current_player != first_player:
+            return f"Error: Player changed mid-turn at state {i}"
+    
+    # Get the dice for the turn
+    dice = states[0]._dice  # type: ignore
+    dice_values = [int(dice[0]) + 1, int(dice[1]) + 1]  # Convert from 0-based to 1-based
+    
+    # Format dice string in standard notation
+    if dice_values[0] == dice_values[1]:
+        dice_str = f"{dice_values[0]}-{dice_values[0]}"  # e.g., "5-5" for doubles
+    else:
+        dice_str = f"{dice_values[0]}-{dice_values[1]}"  # e.g., "6-4" for normal roll
+    
+    # Get move descriptions in standard notation
+    move_strs = []
+    for i, action in enumerate(actions):
+        # Skip no-op actions (src = 0)
+        if action // 6 != 0:
+            src_value = action // 6
+            die_value = action % 6 + 1
+            
+            # Get source and target in standard notation
+            src, _, tgt = _decompose_action(action)
+            
+            # Format source
+            if src_value == 1:  # From bar
+                src_str = "Bar"
+            else:
+                src_str = str(src_value - 1)  # Points 1-24
+            
+            # Format target
+            if tgt == _off_idx():  # To off (bear off)
+                tgt_str = "Off"
+            else:
+                tgt_str = str(tgt + 1)  # Points 1-24
+            
+            # Standard notation doesn't include the die value in each move
+            move_strs.append(f"{src_str}/{tgt_str}")
+    
+    # Check if the turn is complete
+    is_complete = False
+    if len(states) > 1:
+        last_state = states[-1]
+        all_dice_used = (last_state._playable_dice == -1).all()  # type: ignore
+        turn_changed = (len(states) > 1 and states[-1].current_player != first_player)
+        no_legal_moves = not any([(m // 6) != 0 for m in range(len(last_state.legal_action_mask)) 
+                                 if last_state.legal_action_mask[m]])
+        
+        is_complete = all_dice_used or turn_changed or no_legal_moves
+    
+    # Format the final turn string in standard notation
+    if not move_strs:
+        return f"{dice_str}: No moves"
+    
+    # In standard notation, there's typically no marker for complete turns
+    # but we could include one for clarity if needed
+    return f"{dice_str}: {' '.join(move_strs)}"
