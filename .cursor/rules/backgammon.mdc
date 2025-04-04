@@ -1,0 +1,15 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+
+# Your rule content
+
+- We are only editing backgammon.py and test_backgammon.py, all tests and requests will apply only to the backgammon component in this code base.
+- This is a large project codebase, so we need to make concise updates and edit as least lines as possible to make code review and pull request review easy.
+- Also, existing code / comments shouldn't change unless necessary, we also dont want to move around block of code or change white space which will look like changes.
+- Keeping changes together as much as possible is ideal, for net new functions we can add them at the end of files.
+- Unless asked specifically to refactor for performance, our preference is to be additive to existing code.  Still use performant JAX style coding, but don't refactor existing code unless necessary to acheive correct outputs.
+- The goal is to make the backgammon code compliant with the game rules, make it fast and effecient for a machine learning environment to use.
+

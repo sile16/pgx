@@ -649,19 +649,22 @@ def test_stochastic_state():
     # New game state should be stochastic (needs dice)
     assert state.is_stochastic  # type: ignore
     
-    # After a stochastic step, it should no longer be stochastic
+    # After a stochastic step with doubles, it should no longer be stochastic
     stochastic_action = 0  # Using double 1's (action 0)
     new_state: State = env.stochastic_step(state, jnp.array(stochastic_action))  # type: ignore
     assert not new_state.is_stochastic  # type: ignore
     
-    # After a regular move and turn change, it should be stochastic again
-    legal_action = jnp.where(new_state.legal_action_mask)[0][0]
-    moved_state: State = env.step(new_state, legal_action, jax.random.PRNGKey(1))  # type: ignore
+    # With doubles, player should be able to make 4 moves before state becomes stochastic again
+    for _ in range(4):
+        # State should remain non-stochastic during moves
+        assert not new_state.is_stochastic  # type: ignore
+        
+        # Make a move
+        legal_action = jnp.where(new_state.legal_action_mask)[0][0]
+        new_state = env.step(new_state, legal_action, jax.random.PRNGKey(1))  # type: ignore
     
-    # If the move ended the turn, it should be stochastic again
-    # We need to check if the turn actually changed
-    if moved_state._turn != new_state._turn:  # type: ignore
-        assert moved_state.is_stochastic  # type: ignore
+    # After all 4 moves are made, state should be stochastic again
+    assert new_state.is_stochastic  # type: ignore
 
 
 def test_stochastic_actions():
@@ -670,18 +673,18 @@ def test_stochastic_actions():
     state: State = env.init(jax.random.PRNGKey(0))  # type: ignore
     
     # For regular mode, all 21 dice combinations should be possible
-    assert len(env._stochastic_action_probs) == 21
+    assert len(env.stochastic_action_probs) == 21
     
     # Test that probabilities sum to 1
-    assert jnp.isclose(jnp.sum(env._stochastic_action_probs), 1.0)
+    assert jnp.isclose(jnp.sum(env.stochastic_action_probs), 1.0)
     
     # Test simple doubles mode
     env_simple = Backgammon(simple_doubles=True)
-    assert len(env_simple._stochastic_action_probs) == 21
+    assert len(env_simple.stochastic_action_probs) == 6
     
     # In simple doubles mode, only the first 6 actions (doubles) have non-zero probability
-    assert jnp.all(env_simple._stochastic_action_probs[6:] == 0)
-    assert jnp.isclose(jnp.sum(env_simple._stochastic_action_probs), 1.0)
+    assert jnp.all(env_simple.stochastic_action_probs[6:] == 0)
+    assert jnp.isclose(jnp.sum(env_simple.stochastic_action_probs), 1.0)
 
 
 def test_stochastic_step():
@@ -761,21 +764,17 @@ def test_stochastic_game_simulation():
     state = env.step(state, legal_action, jax.random.PRNGKey(0))  # type: ignore
     
     # Make another move if the turn hasn't changed
-    if state.is_stochastic:  # type: ignore
-        # Turn has changed, and we need new dice
-        # Let's roll doubles: 3,3 (action index 2)
-        state = env.stochastic_step(state, jnp.array(2))  # type: ignore
-        assert jnp.array_equal(state._dice, jnp.array([2, 2]))  # type: ignore
-    else:
-        # Make a move with the second die
-        legal_action = jnp.where(state.legal_action_mask)[0][0]
-        state = env.step(state, legal_action, jax.random.PRNGKey(1))  # type: ignore
-        
-        # Now the turn has likely changed, and we need new dice
+    for x in range(20):
         if state.is_stochastic:  # type: ignore
-            # Let's roll 1,2 (action index 6)
-            state = env.stochastic_step(state, jnp.array(6))  # type: ignore
-            assert jnp.array_equal(state._dice, jnp.array([0, 1]))  # type: ignore
+            # Turn has changed, and we need new dice
+            # Let's roll doubles: 3,3 (action index 2)
+            state = env.stochastic_step(state, jnp.array(2))  # type: ignore
+            assert jnp.array_equal(state._dice, jnp.array([2, 2]))  # type: ignore
+        else:
+            # Make a move with the second die
+            legal_action = jnp.where(state.legal_action_mask)[0][0]
+            state = env.step(state, legal_action, jax.random.PRNGKey(1))  # type: ignore
+        
     
     # Verify we can continue making moves
     assert not state.terminated
@@ -850,3 +849,67 @@ def test_turn_to_str():
     
     # Expected format based on actual engine behavior
     assert "5-5: 19/" in turn_str_doubles  # The exact point depends on board state
+
+
+#todo no legal action test,
+# when a player has no legal action, what happens?
+
+def test_no_legal_moves_after_turn_change():
+    """Test scenario where player 2 has no legal moves after player 1's turn."""
+    env = Backgammon()
+
+    # Initialize game with fixed seed for reproducibility
+    state: State = env.init(jax.random.PRNGKey(42))  # type: ignore
+
+    # Set up a specific board state where player 1 (white) has moves
+    # and player 2 (black) will have no moves after their turn
+    board = jnp.zeros(28, dtype=jnp.int32)
+    # Set up white pieces (player 1) to block all entry points
+    
+    # From black's perspective, white pieces are negative and at the far end
+    board = board.at[18].set(-2)  # Two white pieces blocking point 18
+    board = board.at[19].set(-2)  # Two white pieces blocking point 19
+    board = board.at[20].set(-2)  # Two white pieces blocking point 20
+    board = board.at[21].set(-2)  # Two white pieces blocking point 21
+    board = board.at[22].set(-2)  # Two white pieces blocking point 22
+    board = board.at[23].set(-2)  # Two white pieces blocking point 23
+    # Set up black pieces (player 0) on the bar
+    board = board.at[24].set(2)   # Two black pieces on the bar
+
+    # Set up initial state with player 1's turn
+    state = state.replace(  # type: ignore
+        current_player=jnp.int32(1),  # White's turn
+        _board=board,
+        _turn=jnp.int32(1),
+        _dice=jnp.zeros(2, dtype=jnp.int32),
+        _playable_dice=jnp.zeros(4, dtype=jnp.int32),
+        _played_dice_num=jnp.int32(0),
+        legal_action_mask=jnp.zeros(6 * 26, dtype=jnp.bool_)
+    )
+
+    # Give player 1 dice that allow them to move
+    state = env.stochastic_step(state, jnp.array(10))  # Roll 1,6
+    assert not state.is_stochastic  # type: ignore
+    assert jnp.array_equal(state._dice, jnp.array([0, 5]))  # type: ignore
+
+    # Player 1 makes all their moves
+    while not state.is_stochastic:  # type: ignore
+        legal_action = jnp.where(state.legal_action_mask)[0][0]
+        state = env.step(state, legal_action, jax.random.PRNGKey(1))
+
+    # Verify it's now player 2's turn
+    assert state.current_player == 0  # Black's turn
+    assert state.is_stochastic  # type: ignore
+
+    # Give player 2 dice that give them no legal moves
+    state = env.stochastic_step(state, jnp.array(10))  # Roll 1,6
+    assert not state.is_stochastic  # type: ignore
+    assert jnp.array_equal(state._dice, jnp.array([0, 5]))  # type: ignore
+
+    # Verify player 2 has no legal moves
+    assert not state.legal_action_mask.any()
+
+    # Verify the turn changes back to player 1
+    state = env.step(state, 0, jax.random.PRNGKey(2))  # No-op action
+    assert state.current_player == 1  # Back to white's turn
+    assert state.is_stochastic  # type: ignore

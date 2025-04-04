@@ -34,6 +34,7 @@ class State(core.State):
     rewards: Array = jnp.float32([0.0, 0.0])
     terminated: Array = FALSE
     truncated: Array = FALSE
+    is_stochastic: Array = TRUE  # whether the state is in stochastic mode
     # micro action = 6 * src + die
     legal_action_mask: Array = jnp.zeros(6 * 26, dtype=jnp.bool_)
     _step_count: Array = jnp.int32(0)
@@ -44,16 +45,11 @@ class State(core.State):
     _playable_dice: Array = jnp.zeros(4, dtype=jnp.int32)  # playable dice -1 for empty
     _played_dice_num: Array = jnp.int32(0)  # the number of dice played
     _turn: Array = jnp.int32(1)  # black: 0 white:1
-    _is_stochastic: Array = TRUE  # whether the state is in stochastic mode
+    
 
     @property
     def env_id(self) -> core.EnvId:
         return "backgammon"
-
-    @property
-    def is_stochastic(self) -> Array:
-        """Whether the state is in stochastic mode."""
-        return self._is_stochastic
 
     def replace(self, **kwargs) -> "State":
         """Create a new state with updated fields."""
@@ -64,7 +60,7 @@ class Backgammon(core.Env):
     def __init__(self, simple_doubles: bool = False):
         super().__init__()
         self.simple_doubles = simple_doubles
-        self._stochastic_action_probs = (
+        self.stochastic_action_probs = (
             _STOCHASTIC_SIMPLE_DOUBLES_ACTION_PROBS if simple_doubles 
             else _STOCHASTIC_ACTION_PROBS
         )
@@ -115,6 +111,7 @@ class Backgammon(core.Env):
             _playable_dice=playable_dice,
             _played_dice_num=played_dice_num,
             legal_action_mask=legal_action_mask,
+            is_stochastic=FALSE,
         )
     
     def stochastic_step(self, state: State, action: Array) -> State:
@@ -127,17 +124,12 @@ class Backgammon(core.Env):
             action: Index into _STOCHASTIC_DICE_MAPPING (0-20) representing the dice roll
             
         Returns:
-            New state with dice set and _is_stochastic set to False
+            New state with dice set and is_stochastic set to False
         """
-        # In simple doubles mode, only allow double actions (0-5)
-        if self.simple_doubles and action >= 6:
-            # Return the current state without changes if non-double action in simple doubles mode
-            return state
-        
+
         # Get the dice roll from the mapping
         roll = _STOCHASTIC_DICE_MAPPING[action]
-        new_state = self.set_dice(state, roll)
-        return new_state.replace(_is_stochastic=FALSE)  # after setting the dice, we are no longer stochastic
+        return self.set_dice(state, roll)
 
     @property
     def id(self) -> core.EnvId:
@@ -175,7 +167,7 @@ def _init(rng: PRNGKey) -> State:
         _played_dice_num=played_dice_num,
         _turn=turn,
         legal_action_mask=legal_action_mask,
-        _is_stochastic=TRUE, #initial state is stochastic, as it requires a dice roll
+        is_stochastic=TRUE, #initial state is stochastic, as it requires a dice roll
     )
     return state
 
@@ -324,7 +316,7 @@ def _change_turn(state: State, key) -> State:
         _playable_dice=playable_dice,
         _played_dice_num=played_dice_num,
         legal_action_mask=legal_action_mask,
-        _is_stochastic=TRUE, #after a player change it's a stochastic state
+        is_stochastic=TRUE, #after a player change it's a stochastic state
     )
 
 
@@ -628,12 +620,7 @@ _STOCHASTIC_SIMPLE_DOUBLES_ACTION_PROBS = jnp.array([
     1/6,  # 4,4
     1/6,  # 5,5
     1/6,  # 6,6
-    # Non-doubles (2/36 each)
-    0, 0, 0, 0, 0,  # 1,2 1,3 1,4 1,5 1,6
-    0, 0, 0, 0,     # 2,3 2,4 2,5 2,6
-    0, 0, 0,        # 3,4 3,5 3,6
-    0, 0,           # 4,5 4,6
-    0,              # 5,6
+    
 ], dtype=jnp.float32)
 
 # Static mapping of action indices to dice rolls
