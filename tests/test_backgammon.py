@@ -861,22 +861,25 @@ def test_no_legal_moves_after_turn_change():
     # Initialize game with fixed seed for reproducibility
     state: State = env.init(jax.random.PRNGKey(42))  # type: ignore
 
-    # Set up a specific board state where player 1 (white) has moves
-    # and player 2 (black) will have no moves after their turn
+    # Set up a specific board state where player 1 (white) has moves,
+    # but player 2 (black) will have no legal moves.
+    # In this setup, we create a state where all black pieces are on the bar and 
+    # all entry points (0-5) are blocked by white pieces with more than 1 checker.
     board = jnp.zeros(28, dtype=jnp.int32)
-    # Set up white pieces (player 1) to block all entry points
     
-    # From black's perspective, white pieces are negative and at the far end
-    board = board.at[18].set(-2)  # Two white pieces blocking point 18
-    board = board.at[19].set(-2)  # Two white pieces blocking point 19
-    board = board.at[20].set(-2)  # Two white pieces blocking point 20
-    board = board.at[21].set(-2)  # Two white pieces blocking point 21
-    board = board.at[22].set(-2)  # Two white pieces blocking point 22
-    board = board.at[23].set(-2)  # Two white pieces blocking point 23
-    # Set up black pieces (player 0) on the bar
-    board = board.at[24].set(2)   # Two black pieces on the bar
+    # Place all black pieces (15) on the bar - after flipping, these will be white pieces
+    board = board.at[25].set(15)  # All black pieces (15) on the bar (this will become white bar after flip)
+    
+    # Block all entry points with 2 white pieces each from black's perspective
+    # These will be black pieces after flipping, at positions 18-23
+    board = board.at[18].set(2)
+    board = board.at[19].set(2)
+    board = board.at[20].set(2)
+    board = board.at[21].set(2)
+    board = board.at[22].set(2)
+    board = board.at[23].set(2)
 
-    # Set up initial state with player 1's turn
+    # Set up initial state with white's turn (player 1)
     state = state.replace(  # type: ignore
         current_player=jnp.int32(1),  # White's turn
         _board=board,
@@ -887,7 +890,7 @@ def test_no_legal_moves_after_turn_change():
         legal_action_mask=jnp.zeros(6 * 26, dtype=jnp.bool_)
     )
 
-    # Give player 1 dice that allow them to move
+    # Give player 1 (white) dice that allow them to move
     state = env.stochastic_step(state, jnp.array(10))  # Roll 1,6
     assert not state.is_stochastic  # type: ignore
     assert jnp.array_equal(state._dice, jnp.array([0, 5]))  # type: ignore
@@ -901,15 +904,28 @@ def test_no_legal_moves_after_turn_change():
     assert state.current_player == 0  # Black's turn
     assert state.is_stochastic  # type: ignore
 
-    # Give player 2 dice that give them no legal moves
+    # After the flip, the board should have:
+    # - All white pieces (15) on the bar
+    # - All entry points (0-5) blocked by black pieces (2 each)
+    # This means black will have no legal moves regardless of dice
+
+    # Give player 2 dice
     state = env.stochastic_step(state, jnp.array(10))  # Roll 1,6
     assert not state.is_stochastic  # type: ignore
     assert jnp.array_equal(state._dice, jnp.array([0, 5]))  # type: ignore
 
-    # Verify player 2 has no legal moves
-    assert not state.legal_action_mask.any()
+    # Debug: Print the board and legal actions
+    print("Board state after flipping:", state._board)
+    legal_actions = jnp.where(state.legal_action_mask)[0]
+    print("Legal actions:", legal_actions)
+    
+    # The key check: Verify player 2 (black) only has no-op actions available
+    # When a player has no legal moves, the game allows no-op actions (0-5)
+    assert jnp.array_equal(legal_actions, jnp.array([0, 1, 2, 3, 4, 5]))
+    # Verify no actions beyond index 5 are legal (meaning only no-op actions are available)
+    assert not state.legal_action_mask[6:].any()
 
-    # Verify the turn changes back to player 1
+    # Verify the turn changes back to player 1 after a no-op action
     state = env.step(state, 0, jax.random.PRNGKey(2))  # No-op action
     assert state.current_player == 1  # Back to white's turn
     assert state.is_stochastic  # type: ignore
