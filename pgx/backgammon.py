@@ -57,13 +57,16 @@ class State(core.State):
 
 
 class Backgammon(core.Env):
-    def __init__(self, simple_doubles: bool = False):
+    def __init__(self, simple_doubles: bool = False, short_game: bool = False):
         super().__init__()
         self.simple_doubles = simple_doubles
+        self.init_board_fn = _make_init_board_short if short_game else _make_init_board
+            
         self.stochastic_action_probs = (
             _STOCHASTIC_SIMPLE_DOUBLES_ACTION_PROBS if simple_doubles 
             else _STOCHASTIC_ACTION_PROBS
         )
+
 
     def step(self, state: core.State, action: Array, key: Optional[Array] = None) -> core.State:
         assert key is not None, (
@@ -76,7 +79,9 @@ class Backgammon(core.Env):
         return super().step(state, action, key)
 
     def _init(self, key: PRNGKey) -> State:
-        return _init(key)
+        state = _init(key)
+        state = state.replace(_board=self.init_board_fn())
+        return state
 
     def _step(self, state: core.State, action: Array, key) -> State:
         assert isinstance(state, State)
@@ -284,6 +289,15 @@ def _make_init_board() -> Array:
     Initialize the board based on black's perspective.
     """
     board: Array = jnp.array([2, 0, 0, 0, 0, -5, 0, -3, 0, 0, 0, 5, -5, 0, 0, 0, 3, 0, 5, 0, 0, 0, 0, -2, 0, 0, 0, 0], dtype=jnp.int32)  # type: ignore
+    return board
+
+def _make_init_board_short() -> Array:
+    """
+    Initialize the board based on black's perspective.
+    This board is further along in the game, so game durations are shorter.
+    But it still has all the components of a normal backgammon board.
+    """
+    board: Array = jnp.array([0, -1, -3, 0, 2, -3, 0, -3, -2, 0, 0, -1, 1, 0, 0, 2, 3, 0, 3, -2, 0, 3, 1, 0, 0, 0, 0, 0], dtype=jnp.int32)  # type: ignore
     return board
 
 
@@ -609,8 +623,7 @@ _STOCHASTIC_ACTION_PROBS = jnp.array([
 ], dtype=jnp.float32)
 
 # Pre-computed probability distribution for dice rolls
-# First 6 indices are doubles (1,1 2,2 3,3 4,4 5,5 6,6) with probability 1/36
-# Remaining indices are non-doubles with probability 2/36
+# Simple double only mode
 _STOCHASTIC_SIMPLE_DOUBLES_ACTION_PROBS = jnp.array([
     # Doubles (1/36 each)
     1/6,  # 1,1
@@ -619,7 +632,10 @@ _STOCHASTIC_SIMPLE_DOUBLES_ACTION_PROBS = jnp.array([
     1/6,  # 4,4
     1/6,  # 5,5
     1/6,  # 6,6
-    
+    # make all other dice rolls 0 probability
+    0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0
 ], dtype=jnp.float32)
 
 # Static mapping of action indices to dice rolls
