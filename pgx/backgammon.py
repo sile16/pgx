@@ -141,7 +141,7 @@ class Backgammon(core.Env):
 
     @property
     def version(self) -> str:
-        return "v2"
+        return "v2.1"
 
     @property
     def num_players(self) -> int:
@@ -712,13 +712,13 @@ def stochastic_action_to_str(action: Array) -> str:
     Returns:
         A string describing the dice selection
     """
-    if action < 0 or action > 5:
+    if action < 0 or action >= _STOCHASTIC_DICE_MAPPING.shape[0]:
         return f"Invalid stochastic action: {action}"
     
     dice = _STOCHASTIC_DICE_MAPPING[action]
     die1, die2 = dice[0] + 1, dice[1] + 1  # Convert from 0-based to 1-based
     
-    return f"Select dice: {die1}-{die2}"
+    return f"Rolled: {die1}-{die2}"
 
 def turn_to_str(states: list[core.State], actions: list[Array]) -> str:
     """

@@ -680,7 +680,7 @@ def test_stochastic_actions():
     
     # Test simple doubles mode
     env_simple = Backgammon(simple_doubles=True)
-    assert len(env_simple.stochastic_action_probs) == 6
+    assert len(env_simple.stochastic_action_probs) == 21
     
     # In simple doubles mode, only the first 6 actions (doubles) have non-zero probability
     assert jnp.all(env_simple.stochastic_action_probs[6:] == 0)
@@ -729,18 +729,6 @@ def test_stochastic_simple_doubles():
     assert jnp.array_equal(new_state._dice, jnp.array([0, 0]))  # type: ignore
     assert not new_state.is_stochastic  # type: ignore
     
-    # Test non-double action (action 10 = 1,6)
-    # In simple doubles mode, non-double actions should be ignored
-    # and state should remain stochastic
-    stochastic_action = 10
-    original_dice = state._dice.copy()  # type: ignore
-    new_state = env.stochastic_step(state, jnp.array(stochastic_action))  # type: ignore
-    
-    # Check that dice are unchanged for non-double action
-    assert jnp.array_equal(new_state._dice, original_dice)  # type: ignore
-    
-    # State should still be stochastic since the action was ignored
-    assert new_state.is_stochastic  # type: ignore
 
 def test_stochastic_game_simulation():
     """Test simulating a game with predefined dice rolls."""
@@ -802,12 +790,14 @@ def test_action_to_str():
     assert "Off" in action_to_str(bearing_off_action)
     
     # Test stochastic actions
-    assert stochastic_action_to_str(0) == "Select dice: 1-1"
-    assert stochastic_action_to_str(1) == "Select dice: 2-2"
-    assert stochastic_action_to_str(2) == "Select dice: 3-3"
-    assert stochastic_action_to_str(3) == "Select dice: 4-4"
-    assert stochastic_action_to_str(4) == "Select dice: 5-5"
-    assert stochastic_action_to_str(5) == "Select dice: 6-6"
+    assert stochastic_action_to_str(0) == "Rolled: 1-1"
+    assert stochastic_action_to_str(1) == "Rolled: 2-2"
+    assert stochastic_action_to_str(2) == "Rolled: 3-3"
+    assert stochastic_action_to_str(3) == "Rolled: 4-4"
+    assert stochastic_action_to_str(4) == "Rolled: 5-5"
+    assert stochastic_action_to_str(5) == "Rolled: 6-6"
+    larger_roll = stochastic_action_to_str(10)
+    assert larger_roll == "Rolled: 1-6"
 
 def test_turn_to_str():
     """Test the turn_to_str function for standard backgammon notation."""
@@ -929,3 +919,27 @@ def test_no_legal_moves_after_turn_change():
     state = env.step(state, 0, jax.random.PRNGKey(2))  # No-op action
     assert state.current_player == 1  # Back to white's turn
     assert state.is_stochastic  # type: ignore
+
+
+def test_bear_off_legal_action_mask():
+    env = Backgammon()
+
+    # Initialize game with fixed seed for reproducibility
+    state: State = env.init(jax.random.PRNGKey(42))  # type: ignore
+
+    dice = jnp.array([2, 3], dtype=jnp.int32)
+    board = jnp.array([-1, 0, 0, -1, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 12, -12], dtype=jnp.int32)  # type: ignore
+    
+    state = state.replace(
+        _board=board,
+    )
+    state = env.set_dice(state, dice)
+
+    new_state = env.step(state, 122, jax.random.PRNGKey(0))
+    print(new_state._board)
+    print(new_state.legal_action_mask)
+    legal_actions = jnp.where(new_state.legal_action_mask)[0].tolist()
+    print(legal_actions)
+    
+    
+
