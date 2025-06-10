@@ -106,7 +106,7 @@ class Backgammon(core.Env):
         """
         playable_dice: Array = _set_playable_dice(dice)
         played_dice_num: Array = jnp.int32(0)
-        legal_action_mask: Array = _legal_action_mask(state._board, dice)
+        legal_action_mask: Array = _legal_action_mask(state._board, playable_dice, dice, played_dice_num)
         return state.replace(  # type: ignore
             current_player=state.current_player,
             _board=state._board,
@@ -161,7 +161,7 @@ def _init(rng: PRNGKey) -> State:
     playable_dice: Array = _set_playable_dice(dice)
     played_dice_num: Array = jnp.int32(0)
     turn: Array = _init_turn(dice)
-    legal_action_mask: Array = _legal_action_mask(board, playable_dice)
+    legal_action_mask: Array = _legal_action_mask(board, playable_dice, dice, played_dice_num)
     state = State(  # type: ignore
         current_player=current_player,
         _board=board,
@@ -256,7 +256,7 @@ def _update_by_action(state: State, action: Array) -> State:
     board: Array = _move(state._board, action)
     played_dice_num: Array = jnp.int32(state._played_dice_num + 1)
     playable_dice: Array = _update_playable_dice(state._playable_dice, state._played_dice_num, state._dice, action)
-    legal_action_mask: Array = _legal_action_mask(board, playable_dice)
+    legal_action_mask: Array = _legal_action_mask(board, playable_dice, state._dice, played_dice_num)
     return jax.lax.cond(
         is_no_op,
         lambda: state,
@@ -319,7 +319,7 @@ def _change_turn(state: State, key) -> State:
     dice: Array = _roll_dice(key)
     playable_dice: Array = _set_playable_dice(dice)
     played_dice_num: Array = jnp.int32(0)
-    legal_action_mask: Array = _legal_action_mask(board, dice)
+    legal_action_mask: Array = _legal_action_mask(board, playable_dice, dice, played_dice_num)
     return state.replace(  # type: ignore
         current_player=current_player,
         _board=board,
@@ -559,15 +559,165 @@ def _remains_at_inner(board: Array) -> bool:
     return jnp.take(board, _home_board()).sum() != 0  # type: ignore
 
 
-def _legal_action_mask(board: Array, dice: Array) -> Array:
+def _can_play_two_dice(board: Array, die1: int, die2: int) -> Array:
+    """Checks if there exists a legal sequence of moves for two different dice.
+    This is true if (move with die1 -> move with die2) is possible OR
+    (move with die2 -> move with die1) is possible.
+
+    Args:
+        board: The current board state.
+        die1: The first die roll (1-6).
+        die2: The second die roll (1-6).
+
+    Returns:
+        A boolean indicating if a two-move sequence is possible.
+    """
+    # Check for d1 -> d2 sequence
+    def check_d1_then_d2_body(i, carry):
+        action1 = i
+
+        def check_and_update(c):
+            board_after_1 = _move(board, action1)
+            can_play_d2_after = _legal_action_mask_for_valid_single_dice(board_after_1, die2 - 1).any()
+            return c | can_play_d2_after
+
+        is_candidate = (action1 % 6 == die1 - 1) & _is_action_legal(board, action1)
+        return jax.lax.cond(is_candidate, lambda: check_and_update(carry), lambda: carry)
+
+    can_play_d1_then_d2 = jax.lax.fori_loop(0, 26 * 6, check_d1_then_d2_body, FALSE)
+
+    # Check for d2 -> d1 sequence
+    def check_d2_then_d1_body(i, carry):
+        action2 = i
+        
+        def check_and_update(c):
+            board_after_2 = _move(board, action2)
+            can_play_d1_after = _legal_action_mask_for_valid_single_dice(board_after_2, die1 - 1).any()
+            return c | can_play_d1_after
+
+        is_candidate = (action2 % 6 == die2 - 1) & _is_action_legal(board, action2)
+        return jax.lax.cond(is_candidate, lambda: check_and_update(carry), lambda: carry)
+        
+    can_play_d2_then_d1 = jax.lax.fori_loop(0, 26 * 6, check_d2_then_d1_body, FALSE)
+    
+    return can_play_d1_then_d2 | can_play_d2_then_d1
+
+
+def _get_forced_full_move_mask(board: Array, die1: int, die2: int) -> Array:
+    """Returns a mask of legal first moves, assuming both dice must be played.
+    A move is legal only if the other die can be played subsequently.
+
+    Args:
+        board: The current board state.
+        die1: The first die roll (1-6).
+        die2: The second die roll (1-6).
+
+    Returns:
+        A boolean mask of legal actions.
+    """
+    def loop_body(i, mask):
+        action = i
+        new_val = FALSE
+
+        # Check if 'action' is a valid first move using die1
+        def check_d1():
+            board_after_d1 = _move(board, action)
+            return _legal_action_mask_for_valid_single_dice(board_after_d1, die2 - 1).any()
+        
+        is_valid_d1_move = (action % 6 == die1 - 1) & _is_action_legal(board, action)
+        new_val = new_val | jax.lax.cond(is_valid_d1_move, check_d1, lambda: FALSE)
+
+        # Check if 'action' is a valid first move using die2
+        def check_d2():
+            board_after_d2 = _move(board, action)
+            return _legal_action_mask_for_valid_single_dice(board_after_d2, die1 - 1).any()
+            
+        is_valid_d2_move = (action % 6 == die2 - 1) & _is_action_legal(board, action)
+        new_val = new_val | jax.lax.cond(is_valid_d2_move, check_d2, lambda: FALSE)
+
+        return mask.at[action].set(new_val)
+
+    initial_mask = jnp.zeros(26 * 6, dtype=jnp.bool_)
+    return jax.lax.fori_loop(0, 26 * 6, loop_body, initial_mask)
+
+
+def _get_forced_single_move_mask(board: Array, die1: int, die2: int) -> Array:
+    """Returns a mask of legal moves when only one die can be played.
+    The higher die must be chosen if it's playable.
+
+    Args:
+        board: The current board state.
+        die1: The first die roll (1-6).
+        die2: The second die roll (1-6).
+
+    Returns:
+        A boolean mask of legal actions.
+    """
+    d_h = jnp.maximum(die1, die2)
+    d_l = jnp.minimum(die1, die2)
+    
+    mask_h = _legal_action_mask_for_valid_single_dice(board, d_h - 1)
+    can_play_h = mask_h.any()
+    
+    mask_l = _legal_action_mask_for_valid_single_dice(board, d_l - 1)
+    
+    return jax.lax.cond(
+        can_play_h,
+        lambda: mask_h,
+        lambda: mask_l,
+    )
+
+
+def _apply_special_backgammon_rules(board: Array, turn_dice: Array) -> Array:
+    """Computes the legal action mask considering two special backgammon rules for non-doubles:
+    1. If you can play both dice, you must. A move that makes the second die unplayable is illegal.
+    2. If you can only play one die, you must play the higher one if possible.
+    
+    This function should only be called at the start of a non-double turn.
+    """
+    d1_0idx, d2_0idx = turn_dice[0], turn_dice[1]
+    d1 = d1_0idx + 1
+    d2 = d2_0idx + 1
+
+    can_play_both = _can_play_two_dice(board, d1, d2)
+
+    return jax.lax.cond(
+        can_play_both,
+        # Rule 1: Forced full move.
+        lambda: _get_forced_full_move_mask(board, d1, d2),
+        # Rule 2: Forced single (higher) move.
+        lambda: _get_forced_single_move_mask(board, d1, d2),
+    )
+
+
+def _legal_action_mask(board: Array, playable_dice: Array, turn_dice: Array, played_dice_num: Array) -> Array:
+    # Standard mask: what moves are possible with the currently available dice.
+    simple_legal_mask = jax.vmap(partial(_legal_action_mask_for_single_die, board=board))(die=playable_dice).any(axis=0)
+
+    # Apply special rules only at the start of a turn (played_dice_num == 0) for non-doubles.
+    is_start_of_turn = (played_dice_num == 0)
+    is_nondoubles = (turn_dice[0] != turn_dice[1])
+
+    def apply_rules_fn():
+        return _apply_special_backgammon_rules(board, turn_dice)
+
+    def keep_simple_mask_fn():
+        return simple_legal_mask
+
+    final_mask = jax.lax.cond(
+        is_start_of_turn & is_nondoubles,
+        apply_rules_fn,
+        keep_simple_mask_fn
+    )
+
+    # If no moves are possible after filtering, allow no-op.
     no_op_mask = jnp.zeros(26 * 6, dtype=jnp.bool_).at[0:6].set(TRUE)
-    legal_action_mask = jax.vmap(partial(_legal_action_mask_for_single_die, board=board))(die=dice).any(
-        axis=0
-    )  # (26 * 6)
-    legal_action_exists = ~(legal_action_mask.sum() == 0)
-    return (
-        legal_action_exists * legal_action_mask + ~legal_action_exists * no_op_mask
-    )  # if there is no legal action, no-op is legal
+    legal_action_exists = final_mask.any()
+    return jax.lax.cond(
+        legal_action_exists,
+        lambda: final_mask,
+        lambda: no_op_mask
+    )
 
 
 def _legal_action_mask_for_single_die(board: Array, die) -> Array:
