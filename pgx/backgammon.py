@@ -27,6 +27,9 @@ TRUE = jnp.bool_(True)
 FALSE = jnp.bool_(False)
 
 
+
+
+
 @dataclass
 class State(core.State):
     current_player: Array = jnp.int32(0)
@@ -55,6 +58,38 @@ class State(core.State):
         """Create a new state with updated fields."""
         return dataclasses.replace(self, **kwargs)
 
+
+def _build_lookup_tables():
+    actions = jnp.arange(26 * 6, dtype=jnp.int32)
+    
+    # Logic derived from original _calc_src
+    # src_raw: 0->NoOp, 1->Bar, 2..25->Points 0..23
+    src_raw = actions // 6
+    # Map raw indices to actual board positions:
+    # 1 -> 24 (Bar), 0 -> -2 (No-Op), others -> src_raw - 2
+    src = jnp.where(src_raw == 1, 24, jnp.where(src_raw == 0, -2, src_raw - 2))
+    
+    # Logic derived from original die calculation
+    die = (actions % 6) + 1
+    
+    # Logic derived from original _calc_tgt and _from_board
+    # If src is Bar (24), tgt is die - 1
+    # Else, tgt is src + die (if within 0-23) or 26 (Off)
+    tgt_from_bar = die - 1
+    tgt_from_board = src + die
+    # If move goes beyond board (>=24), it goes to Off (26)
+    tgt_normal = jnp.where((tgt_from_board >= 0) & (tgt_from_board <= 23), tgt_from_board, 26)
+    
+    tgt = jnp.where(src >= 24, tgt_from_bar, tgt_normal)
+    
+    # Handle the specific No-Op case (src = -2) to keep tgt safe/consistent
+    # (Though logic usually filters no-ops before checking tgt)
+    tgt = jnp.where(src == -2, -2, tgt)
+
+    return src.astype(jnp.int32), die.astype(jnp.int32), tgt.astype(jnp.int32)
+
+# Create the constants immediately
+_ACTION_SRC_LOOKUP, _ACTION_DIE_LOOKUP, _ACTION_TGT_LOOKUP = _build_lookup_tables()
 
 class Backgammon(core.Env):
     def __init__(self, simple_doubles: bool = False, short_game: bool = False):
@@ -440,34 +475,16 @@ def _exists(board: Array, point: int) -> bool:
     return checkers >= 1  # type: ignore
 
 
-def _calc_src(src: Array) -> int:
-    """
-    Translate src to board index.
-    """
-    return (src == 1) * jnp.int32(_bar_idx()) + (src != 1) * jnp.int32(src - 2)  # type: ignore
-
-
-def _calc_tgt(src: int, die) -> int:
-    """
-    Translate tgt to board index.
-    """
-    return (src >= 24) * (jnp.int32(die) - 1) + (src < 24) * jnp.int32(_from_board(src, die))  # type: ignore
-
-
-def _from_board(src: int, die: int) -> int:
-    _is_to_board = (src + die >= 0) & (src + die <= 23)
-    return _is_to_board * jnp.int32(src + die) + ((~_is_to_board)) * jnp.int32(_off_idx())  # type: ignore
-
-
 def _decompose_action(action: Array):
     """
-    Decompose action to src, die, tgt.
-    action = src*6 + die
+    Decompose action to src, die, tgt using pre-computed lookup tables.
+    Refactor #3: Replaced math/branching with O(1) array access.
     """
-    src = _calc_src(action // 6)  # 0~25
-    die = action % 6 + 1  # 0~5 -> 1~6
-    tgt = _calc_tgt(src, die)
-    return src, die, tgt
+    return (
+        _ACTION_SRC_LOOKUP[action],
+        _ACTION_DIE_LOOKUP[action],
+        _ACTION_TGT_LOOKUP[action]
+    )
 
 
 def _is_action_legal(board: Array, action: Array) -> bool:
