@@ -48,6 +48,83 @@ from pgx.backgammon import (
 )
 
 
+def print_board(state_or_board, dice=None):
+    """
+    Print a backgammon board state in a readable ASCII format.
+
+    Args:
+        state_or_board: Either a State object or a board array (28,)
+        dice: Optional dice array to display (if state_or_board is a board array)
+    """
+    if hasattr(state_or_board, '_board'):
+        board = state_or_board._board
+        dice = state_or_board._dice
+        turn = state_or_board._turn
+    else:
+        board = state_or_board
+        turn = None
+
+    # Board layout:
+    # Points 0-23: board positions (0-indexed, so point 1 = index 0)
+    # 24: Black bar, 25: White bar
+    # 26: Black off, 27: White off
+
+    print("\n" + "=" * 60)
+    print("       13  14  15  16  17  18       19  20  21  22  23  24")
+    print("      +---+---+---+---+---+---+---+---+---+---+---+---+")
+
+    # Top half (points 13-24, indices 12-23)
+    top_row = "      |"
+    for i in range(12, 18):
+        val = int(board[i])
+        top_row += f"{val:3d}|"
+    top_row += "BAR|"
+    for i in range(18, 24):
+        val = int(board[i])
+        top_row += f"{val:3d}|"
+    print(top_row)
+
+    print("      +---+---+---+---+---+---+---+---+---+---+---+---+")
+
+    # Bar and off area
+    black_bar = int(board[24])
+    white_bar = int(board[25])
+    black_off = int(board[26])
+    white_off = int(board[27])
+    print(f"      |           BLACK BAR: {black_bar:2d}  |  WHITE BAR: {white_bar:2d}           |")
+    print(f"      |           BLACK OFF: {black_off:2d}  |  WHITE OFF: {white_off:2d}           |")
+
+    print("      +---+---+---+---+---+---+---+---+---+---+---+---+")
+
+    # Bottom half (points 12-1, indices 11-0, displayed in reverse)
+    bot_row = "      |"
+    for i in range(11, 5, -1):
+        val = int(board[i])
+        bot_row += f"{val:3d}|"
+    bot_row += "   |"
+    for i in range(5, -1, -1):
+        val = int(board[i])
+        bot_row += f"{val:3d}|"
+    print(bot_row)
+
+    print("      +---+---+---+---+---+---+---+---+---+---+---+---+")
+    print("       12  11  10   9   8   7        6   5   4   3   2   1")
+
+    # Show current player, dice and turn info
+    if hasattr(state_or_board, 'current_player'):
+        player_str = "BLACK (0)" if state_or_board.current_player == 0 else "WHITE (1)"
+        print(f"\n      Current Player: {player_str}")
+    if dice is not None:
+        dice_vals = [int(d) + 1 for d in dice]
+        print(f"      Dice: {dice_vals[0]}-{dice_vals[1]}")
+    if turn is not None:
+        turn_str = "BLACK (0)" if turn == 0 else "WHITE (1)"
+        print(f"      Board Perspective (_turn): {turn_str}")
+
+    print("      (Positive = Black, Negative = White)")
+    print("=" * 60 + "\n")
+
+
 seed = 1701
 rng = jax.random.PRNGKey(seed)
 # Use the corrected Backgammon environment for testing the new rules
@@ -672,7 +749,7 @@ def test_must_play_both_dice_if_possible():
     - Dice: 2-1
     - Board: Black to move. Checkers at 13 and 5. White blocks point 14.
     - Analysis:
-      - Can we play both? Yes: Play 2 from 5->6. Then play 1 from 13->15.
+      - Can we play both? Yes: Play 1 from 5->6. Then play 2 from 13->15.
       - Therefore, the "must use both" rule applies.
 
     
@@ -682,17 +759,18 @@ def test_must_play_both_dice_if_possible():
 
     board = jnp.zeros(28, dtype=jnp.int32)
     board = board.at[4].set(1)       # Black at 5
-    board = board.at[7].set(-2)      # White at 10
+    board = board.at[7].set(-2)      # 2 White at 8
     board = board.at[12].set(1)      # Black at 13
-    board = board.at[13].set(-2)      # White block at 4
-    board = board.at[26].set(13)
-    board = board.at[27].set(-11)
+    board = board.at[13].set(-2)      # White block at 14
+    board = board.at[26].set(13)      # put rest on the bar for this test case.
+    board = board.at[27].set(-11)     # put rest on the bar for this test case.
 
     state = state.replace(_board=board)
     state = env.set_dice(state, dice)
+    
 
     # LEGAL: can play 1, 
-    action_5_to_6 = 36
+    action_5_to_6 = 36  #(4 * 6) + 0 (0 indexed dice)
     # ILLEGAL:Not legal, because if we use the 2 here, we can't use the one from source 13 
     # and we can we can't use the 1 from source 5
     action_5_to_7 = 37
@@ -700,13 +778,23 @@ def test_must_play_both_dice_if_possible():
     action_13_to_15 = 85
 
     legal_actions = jnp.where(state.legal_action_mask)[0]
+
+    print_board(state)
+    print("Legal actions:")
     for x in legal_actions:
-        print(action_to_str(x))
+        print(f"{x} = {action_to_str(x)}")
+
+
 
 
     assert action_5_to_6 in legal_actions
     assert action_5_to_7 not in legal_actions
     assert action_13_to_15  in legal_actions
+
+    assert action_to_str(action_5_to_6) == "5/6 (die: 1)"
+    assert action_to_str(action_5_to_7) == "5/7 (die: 2)"
+    assert action_to_str(action_13_to_15) == "13/15 (die: 2)"
+    assert len(legal_actions) == 2
 
 
 
@@ -721,10 +809,8 @@ def test_must_play_higher_die_when_only_one_is_possible():
       - All other black checkers are on point 1.
     - Analysis:
       - Player must enter from the bar. Entry points 1 and 6 are open.
-      - If they enter with 1 (bar->0), the second move (a 6) is impossible.
-        (1->-5 is backwards, 0->-6 is backwards).
-      - If they enter with 6 (bar->5), the second move (a 1) is impossible.
-        (1->0 is backwards, 5->4 is open but doesn't matter for this check).
+      - If they enter with 1 (bar->1), the second move (a 6) is impossible.
+      - If they enter with 6 (bar->6), the second dice (1) is impossible to use.
       - Since it's impossible to play a two-move sequence, the "must play higher"
         rule applies. The player MUST use the 6.
     """
@@ -740,12 +826,20 @@ def test_must_play_higher_die_when_only_one_is_possible():
     state = state.replace(_board=board, current_player=0, _turn=0)
     state = env.set_dice(state, dice)
 
-    # The LEGAL move bar->5 (using a 6) is action: src=1, die=5 -> 1*6+5 = 11
-    action_bar_to_5 = 1 * 6 + 5
-    # The ILLEGAL move bar->0 (using a 1) is action: src=1, die=0 -> 1*6+0 = 6
-    action_bar_to_0 = 1 * 6 + 0
+    # The LEGAL move bar->6 (using a 6) is action: src=1, die=5 -> 1*6+5 = 11
+    action_bar_to_6 = 1 * 6 + 5
+    # The ILLEGAL move bar->1 (using a 1) is action: src=1, die=0 -> 1*6+0 = 6
+    action_bar_to_1 = 1 * 6 + 0
 
     legal_actions = jnp.where(state.legal_action_mask)[0]
 
-    assert action_bar_to_5 in legal_actions
-    assert action_bar_to_0 not in legal_actions
+    print_board(state)
+    print("Legal actions:")
+    for x in legal_actions:
+        print(f"{x} = {action_to_str(x)}")
+
+    assert action_bar_to_6 in legal_actions
+    assert action_bar_to_1 not in legal_actions
+    assert action_to_str(action_bar_to_6) == "Bar/6 (die: 6)"
+    assert action_to_str(action_bar_to_1) == "Bar/1 (die: 1)"
+    assert len(legal_actions) == 1
