@@ -1,4 +1,5 @@
 from functools import partial
+from time import time
 import jax
 import jax.numpy as jnp
 from pgx.backgammon import (
@@ -39,10 +40,7 @@ from pgx._src.api_test import (
 from pgx.backgammon import (
     Backgammon,
     State,
-    _legal_action_mask as _legal_action_mask_v1,
-    _change_turn as _change_turn_v1,
-    _init as _init_v1,
-    _no_winning_step as _no_winning_step_v1,
+    _change_turn,
     # Also import other functions if their signatures changed, but they didn't
     # so we can use the original ones for most tests.
 )
@@ -267,7 +265,7 @@ def test_change_turn():
     state = env.init(rng)
     _turn = state._turn
     # Use the corrected change_turn function
-    state = _change_turn_v1(state, jax.random.PRNGKey(0))
+    state = _change_turn(state, jax.random.PRNGKey(0))
     assert state._turn == (_turn + 1) % 2
 
     test_board: jnp.ndarray = make_test_boad()
@@ -289,7 +287,7 @@ def test_change_turn():
         playable_dice=jnp.array([-1, -1, -1, -1], dtype=jnp.int32),
         played_dice_num=jnp.int32(2),
     )
-    state = _change_turn_v1(state, jax.random.PRNGKey(0))
+    state = _change_turn(state, jax.random.PRNGKey(0))
     assert state._turn == jnp.int32(1)  # Turn changed
     assert (state._board == board).all()  # Flipped.
 
@@ -767,6 +765,12 @@ def test_must_play_both_dice_if_possible():
 
     state = state.replace(_board=board)
     state = env.set_dice(state, dice)
+    #time the svg
+
+    start_time = time()
+    state.save_svg("bg_must_play_both_dice_if_possible.svg")
+    end_time = time()
+    print(f"SVG generation took {end_time - start_time:.6f} seconds.")
     
 
     # LEGAL: can play 1, 
