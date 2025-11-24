@@ -679,8 +679,22 @@ def _apply_special_backgammon_rules(board: Array, turn_dice: Array) -> Array:
 
 
 def _legal_action_mask(board: Array, playable_dice: Array, turn_dice: Array, played_dice_num: Array) -> Array:
-    # Standard mask: what moves are possible with the currently available dice.
-    simple_legal_mask = jax.vmap(partial(_legal_action_mask_for_single_die, board=board))(die=playable_dice).any(axis=0)
+    # 1. OPTIMIZATION: Only look at the first 2 dice slots.
+    #    - Non-doubles: slots 2 and 3 are always -1.
+    #    - Doubles: slots 2 and 3 are redundant duplicates of 0 and 1.
+    #    This minimizes the input size for unique/vmap.
+    dice_to_check = playable_dice[:2]
+    
+    # 2. Deduplication: Identify unique dice values in those first 2 slots.
+    #    Returns at most 2 values (e.g., [3, 5] or [4, -1] or [-1, -1]).
+    unique_dice = jnp.unique(dice_to_check, size=2, fill_value=-1)
+
+    # 3. Compute masks only for these unique dice.
+    #    Shape: (2, 156)
+    unique_masks = jax.vmap(partial(_legal_action_mask_for_single_die, board=board))(die=unique_dice)
+
+    # 4. Combine: Logical OR to see if any available die allows a move.
+    simple_legal_mask = unique_masks.any(axis=0)
 
     # Apply special rules only at the start of a turn (played_dice_num == 0) for non-doubles.
     is_start_of_turn = (played_dice_num == 0)
