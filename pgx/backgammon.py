@@ -558,87 +558,75 @@ def _remains_at_inner(board: Array) -> bool:
     """
     return jnp.take(board, _home_board()).sum() != 0  # type: ignore
 
+def _get_valid_sequence_mask(board: Array, die_first: int, die_second: int) -> Array:
+    """
+    Calculates a mask of valid moves for 'die_first' that ALSO allow 'die_second' 
+    to be played afterwards.
+    
+    Strategy: Speculative Batching (Vectorization)
+    1. Identify all legal moves for die_first.
+    2. Apply ALL of them simultaneously to create a batch of 156 theoretical next boards.
+    3. Check if die_second is legal on those 156 boards in parallel.
+    """
+    # 1. Create a vector of all 156 possible actions (26 positions * 6 dice faces)
+    all_actions = jnp.arange(26 * 6, dtype=jnp.int32)
+
+    # 2. Determine which first moves are valid for die_first
+    # Must match the die face AND be a legal move on the current board
+    is_correct_die = (all_actions % 6) == (die_first - 1)
+    
+    # We vmap _is_action_legal to check all 156 actions at once against the current board
+    is_legal_first_move = jax.vmap(_is_action_legal, in_axes=(None, 0))(board, all_actions)
+    
+    mask_first_move = is_correct_die & is_legal_first_move
+
+    # 3. Speculate: Apply ALL 156 actions to create 156 new board states
+    # Even if the move is illegal, we compute the board (it will be filtered out by mask_first_move later)
+    # Shape: (156, 28)
+    next_boards = jax.vmap(_move, in_axes=(None, 0))(board, all_actions)
+
+    # 4. Check future legality: Is die_second playable on these new boards?
+    # We map over the 0-th axis of next_boards (the 156 hypothetical states)
+    # Shape: (156, 156) -> Boolean mask of legal moves for die_second on each board
+    future_legal_masks = jax.vmap(_legal_action_mask_for_valid_single_dice, in_axes=(0, None))(
+        next_boards, die_second - 1
+    )
+
+    # We only care if *any* move is possible for the second die
+    # Shape: (156,)
+    can_play_second_die = future_legal_masks.any(axis=1)
+
+    # 5. Combine: The sequence is valid if the first move is legal AND the second move is possible
+    return mask_first_move & can_play_second_die
 
 def _can_play_two_dice(board: Array, die1: int, die2: int) -> Array:
-    """Checks if there exists a legal sequence of moves for two different dice.
-    This is true if (move with die1 -> move with die2) is possible OR
-    (move with die2 -> move with die1) is possible.
-
-    Args:
-        board: The current board state.
-        die1: The first die roll (1-6).
-        die2: The second die roll (1-6).
-
-    Returns:
-        A boolean indicating if a two-move sequence is possible.
     """
-    # Check for d1 -> d2 sequence
-    def check_d1_then_d2_body(i, carry):
-        action1 = i
-
-        def check_and_update(c):
-            board_after_1 = _move(board, action1)
-            can_play_d2_after = _legal_action_mask_for_valid_single_dice(board_after_1, die2 - 1).any()
-            return c | can_play_d2_after
-
-        is_candidate = (action1 % 6 == die1 - 1) & _is_action_legal(board, action1)
-        return jax.lax.cond(is_candidate, lambda: check_and_update(carry), lambda: carry)
-
-    can_play_d1_then_d2 = jax.lax.fori_loop(0, 26 * 6, check_d1_then_d2_body, FALSE)
-
-    # Check for d2 -> d1 sequence
-    def check_d2_then_d1_body(i, carry):
-        action2 = i
-        
-        def check_and_update(c):
-            board_after_2 = _move(board, action2)
-            can_play_d1_after = _legal_action_mask_for_valid_single_dice(board_after_2, die1 - 1).any()
-            return c | can_play_d1_after
-
-        is_candidate = (action2 % 6 == die2 - 1) & _is_action_legal(board, action2)
-        return jax.lax.cond(is_candidate, lambda: check_and_update(carry), lambda: carry)
-        
-    can_play_d2_then_d1 = jax.lax.fori_loop(0, 26 * 6, check_d2_then_d1_body, FALSE)
+    Checks if there exists a legal sequence of moves for two different dice.
+    Refactored to use vectorization instead of loops.
+    """
+    # Check sequence die1 -> die2
+    mask_d1_then_d2 = _get_valid_sequence_mask(board, die1, die2)
     
-    return can_play_d1_then_d2 | can_play_d2_then_d1
+    # Check sequence die2 -> die1
+    mask_d2_then_d1 = _get_valid_sequence_mask(board, die2, die1)
+    
+    # If any valid sequence exists in either direction, return True
+    return mask_d1_then_d2.any() | mask_d2_then_d1.any()
 
 
 def _get_forced_full_move_mask(board: Array, die1: int, die2: int) -> Array:
-    """Returns a mask of legal first moves, assuming both dice must be played.
-    A move is legal only if the other die can be played subsequently.
-
-    Args:
-        board: The current board state.
-        die1: The first die roll (1-6).
-        die2: The second die roll (1-6).
-
-    Returns:
-        A boolean mask of legal actions.
     """
-    def loop_body(i, mask):
-        action = i
-        new_val = FALSE
-
-        # Check if 'action' is a valid first move using die1
-        def check_d1():
-            board_after_d1 = _move(board, action)
-            return _legal_action_mask_for_valid_single_dice(board_after_d1, die2 - 1).any()
-        
-        is_valid_d1_move = (action % 6 == die1 - 1) & _is_action_legal(board, action)
-        new_val = new_val | jax.lax.cond(is_valid_d1_move, check_d1, lambda: FALSE)
-
-        # Check if 'action' is a valid first move using die2
-        def check_d2():
-            board_after_d2 = _move(board, action)
-            return _legal_action_mask_for_valid_single_dice(board_after_d2, die1 - 1).any()
-            
-        is_valid_d2_move = (action % 6 == die2 - 1) & _is_action_legal(board, action)
-        new_val = new_val | jax.lax.cond(is_valid_d2_move, check_d2, lambda: FALSE)
-
-        return mask.at[action].set(new_val)
-
-    initial_mask = jnp.zeros(26 * 6, dtype=jnp.bool_)
-    return jax.lax.fori_loop(0, 26 * 6, loop_body, initial_mask)
+    Returns a mask of legal first moves, assuming both dice must be played.
+    Refactored to use vectorization instead of loops.
+    """
+    # Get valid moves starting with die1 (that allow die2 to follow)
+    mask_d1_start = _get_valid_sequence_mask(board, die1, die2)
+    
+    # Get valid moves starting with die2 (that allow die1 to follow)
+    mask_d2_start = _get_valid_sequence_mask(board, die2, die1)
+    
+    # Combine valid starting moves
+    return mask_d1_start | mask_d2_start
 
 
 def _get_forced_single_move_mask(board: Array, die1: int, die2: int) -> Array:

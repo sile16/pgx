@@ -847,3 +847,51 @@ def test_must_play_higher_die_when_only_one_is_possible():
     assert action_to_str(action_bar_to_6) == "Bar/6 (die: 6)"
     assert action_to_str(action_bar_to_1) == "Bar/1 (die: 1)"
     assert len(legal_actions) == 1
+
+
+def test_must_play_lower_die_if_higher_is_blocked():
+    """
+    Tests Gap 1: If you can only play one die, and the higher one is BLOCKED,
+    you must play the lower one.
+    
+    Standard Rule: You must play the higher die if *possible*.
+    Correction: If the higher die move is blocked, you fall back to the lower die.
+    """
+    # Setup: Roll 6-1.
+    # Board: 
+    # - Black checker on Point 1.
+    # - White blocks Point 7 (blocking the 6 move: 1 -> 7).
+    # - Point 2 is open (allowing the 1 move: 1 -> 2).
+    # - All other points empty/open.
+    
+    state = env.init(jax.random.PRNGKey(0))
+    dice = jnp.array([5, 0]) # 6-1 roll
+    
+    board = jnp.zeros(28, dtype=jnp.int32)
+    board = board.at[0].set(1)   # Black at Point 1
+    board = board.at[6].set(-2)  # White block at Point 7 (1+6)
+    # Point 2 (1+1) is empty/open by default
+    
+    state = state.replace(_board=board, current_player=0, _turn=0)
+    state = env.set_dice(state, dice)
+    
+    # Action: 1 -> 7 (using 6) should be illegal because it's blocked
+    # Action ID: src(2)*6 + die(5) = 5
+    action_using_6 = 2 * 6 + 5
+    
+    # Action: 1 -> 2 (using 1) should be LEGAL because it's the only move
+    # Action ID: src(2)*6 + die(0) = 0
+    action_using_1 = 2 * 6 + 0
+    
+    legal_actions = jnp.where(state.legal_action_mask)[0]
+    
+    print("\n--- Test: Must Play Lower Die if Higher Blocked ---")
+    print(f"Board[0] (Src): {board[0]}")
+    print(f"Board[6] (Block): {board[6]}")
+    print(f"Legal Actions: {[action_to_str(a) for a in legal_actions]}")
+
+    assert action_using_1 in legal_actions
+    assert action_using_6 not in legal_actions
+    assert len(legal_actions) == 1, "Should only have 1 legal move (the lower die)"
+    assert action_to_str(action_using_1) == "1/2 (die: 1)"
+    assert action_to_str(action_using_6) == "1/7 (die: 6)"
