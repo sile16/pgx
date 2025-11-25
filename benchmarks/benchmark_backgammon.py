@@ -20,7 +20,9 @@ from functools import partial
 from typing import NamedTuple
 
 # Suppress CUDA interconnect warnings
-os.environ["JAX_PLATFORMS"] = "cuda"
+# Only set default platform if not already specified
+if "JAX_PLATFORMS" not in os.environ:
+    os.environ["JAX_PLATFORMS"] = "cuda"
 warnings.filterwarnings("ignore", message=".*GPU interconnect.*")
 
 import jax

@@ -579,6 +579,128 @@
           "games_3pt": 881
         }
       ]
+    },
+    {
+      "timestamp": "2025-11-25T11:00:02.601179",
+      "git_commit": "dfe57093a2402bcfadd2f13c8036e3121245a067",
+      "git_commit_short": "dfe5709",
+      "device": "cpu:cpu",
+      "jax_version": "0.8.1",
+      "config": {
+        "short_game": true,
+        "max_steps": 5000,
+        "num_batches": 5
+      },
+      "best_result": {
+        "batch_size": 100,
+        "games_per_second": 120.60283545359648,
+        "steps_per_second": 18886.645237704117,
+        "moves_per_second": 13356.281615143997
+      },
+      "all_results": [
+        {
+          "batch_size": 1,
+          "num_games": 5,
+          "total_steps": 826,
+          "total_moves": 580,
+          "elapsed_time": 0.10599230400111992,
+          "games_per_second": 47.17323627522211,
+          "steps_per_second": 7793.018632666693,
+          "moves_per_second": 5472.095407925765,
+          "avg_steps_per_game": 165.1999969482422,
+          "avg_moves_per_game": 116.0,
+          "min_steps": 113,
+          "max_steps": 264,
+          "games_1pt": 5,
+          "games_2pt": 0,
+          "games_3pt": 0
+        },
+        {
+          "batch_size": 10,
+          "num_games": 50,
+          "total_steps": 7668,
+          "total_moves": 5428,
+          "elapsed_time": 0.6012685559981037,
+          "games_per_second": 83.15751672229088,
+          "steps_per_second": 12753.03676453053,
+          "moves_per_second": 9027.580015371897,
+          "avg_steps_per_game": 153.36000061035156,
+          "avg_moves_per_game": 108.55999755859375,
+          "min_steps": 85,
+          "max_steps": 333,
+          "games_1pt": 30,
+          "games_2pt": 19,
+          "games_3pt": 1
+        },
+        {
+          "batch_size": 25,
+          "num_games": 125,
+          "total_steps": 19641,
+          "total_moves": 13881,
+          "elapsed_time": 1.3121070100023644,
+          "games_per_second": 95.26662006003211,
+          "steps_per_second": 14969.053476792726,
+          "moves_per_second": 10579.167624426445,
+          "avg_steps_per_game": 157.1280059814453,
+          "avg_moves_per_game": 111.04800415039062,
+          "min_steps": 74,
+          "max_steps": 333,
+          "games_1pt": 86,
+          "games_2pt": 33,
+          "games_3pt": 6
+        },
+        {
+          "batch_size": 50,
+          "num_games": 250,
+          "total_steps": 39413,
+          "total_moves": 27865,
+          "elapsed_time": 2.4542360280029243,
+          "games_per_second": 101.86469318659277,
+          "steps_per_second": 16059.172610252725,
+          "moves_per_second": 11353.83870257763,
+          "avg_steps_per_game": 157.65200805664062,
+          "avg_moves_per_game": 111.46000671386719,
+          "min_steps": 74,
+          "max_steps": 427,
+          "games_1pt": 167,
+          "games_2pt": 68,
+          "games_3pt": 15
+        },
+        {
+          "batch_size": 100,
+          "num_games": 500,
+          "total_steps": 78301,
+          "total_moves": 55373,
+          "elapsed_time": 4.145839507997152,
+          "games_per_second": 120.60283545359648,
+          "steps_per_second": 18886.645237704117,
+          "moves_per_second": 13356.281615143997,
+          "avg_steps_per_game": 156.6020050048828,
+          "avg_moves_per_game": 110.74600219726562,
+          "min_steps": 74,
+          "max_steps": 430,
+          "games_1pt": 343,
+          "games_2pt": 129,
+          "games_3pt": 28
+        },
+        {
+          "batch_size": 200,
+          "num_games": 1000,
+          "total_steps": 158507,
+          "total_moves": 112220,
+          "elapsed_time": 10.07276099199953,
+          "games_per_second": 99.27764599937076,
+          "steps_per_second": 15736.201834422262,
+          "moves_per_second": 11140.937434049387,
+          "avg_steps_per_game": 158.5070037841797,
+          "avg_moves_per_game": 112.22000885009766,
+          "min_steps": 66,
+          "max_steps": 621,
+          "games_1pt": 678,
+          "games_2pt": 257,
+          "games_3pt": 65
+        }
+      ]
     }
   ]
 }

@@ -109,5 +109,8 @@ python -m pytest tests/test_backgammon.py -v
 
 ## Hardware
 - GPU: NVIDIA GeForce RTX 4090 (24GB)
-- Optimal batch size: 4000 (best throughput)
-- Batch size 5000+ causes OOM
+  - Optimal batch size: 4000 (5,797 games/sec)
+  - Batch size 5000+ causes OOM
+- CPU: Intel Core i7-10700K @ 3.80GHz (8 cores, 16 threads)
+  - Optimal batch size: 100 (121 games/sec)
+  - Use `JAX_PLATFORMS=cpu` to run on CPU

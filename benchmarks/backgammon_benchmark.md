@@ -5,6 +5,7 @@ This document tracks performance optimizations made to the PGX Backgammon implem
 ## Hardware
 
 - GPU: NVIDIA GeForce RTX 4090 (24GB)
+- CPU: Intel Core i7-10700K @ 3.80GHz (8 cores, 16 threads)
 - JAX version: 0.8.1
 
 ## Performance History
@@ -147,14 +148,62 @@ This avoids repeated array allocation in JIT-compiled code.
    - Current board representation uses 28-element array
    - Could explore bitboard representations for certain operations
 
+## CPU vs GPU Performance Comparison
+
+For ML integration where backgammon may interact with other game engines, understanding CPU vs GPU tradeoffs is important.
+
+### GPU Performance (RTX 4090)
+
+| Batch Size | Games/sec | Steps/sec | Moves/sec |
+|------------|-----------|-----------|-----------|
+| 1,000 | 4,164 | 647,295 | 458,008 |
+| 2,000 | 5,563 | 864,661 | 611,872 |
+| **4,000** | **5,797** | **900,543** | **637,405** |
+
+**Optimal batch size: 4,000** (best throughput)
+
+### CPU Performance (i7-10700K)
+
+| Batch Size | Games/sec | Steps/sec | Moves/sec |
+|------------|-----------|-----------|-----------|
+| 1 | 47 | 7,793 | 5,472 |
+| 10 | 83 | 12,753 | 9,028 |
+| 25 | 95 | 14,969 | 10,579 |
+| 50 | 102 | 16,059 | 11,354 |
+| **100** | **121** | **18,887** | **13,356** |
+| 200 | 99 | 15,736 | 11,141 |
+
+**Optimal batch size: 100** (best throughput)
+
+### Summary
+
+| Device | Optimal Batch | Games/sec | GPU Speedup |
+|--------|---------------|-----------|-------------|
+| GPU (RTX 4090) | 4,000 | 5,797 | 48x |
+| CPU (i7-10700K) | 100 | 121 | 1x (baseline) |
+
+### Recommendations for ML Integration
+
+| Use Case | Recommended Device | Batch Size |
+|----------|-------------------|------------|
+| Interactive/low latency | CPU | 1-10 |
+| Small batch RL training | CPU | 50-100 |
+| Large batch training | GPU | 2,000-4,000 |
+| Integration with sequential engines | CPU | 1-10 |
+
+**Key insight:** The 48x GPU advantage only materializes at high batch sizes. If your ML pipeline is bottlenecked by other engines processing one game at a time, CPU with small batches may be preferable to avoid GPU transfer overhead.
+
 ## Benchmark Commands
 
 ```bash
-# Quick benchmark (~1 min, recommended for development)
+# Quick GPU benchmark (~1 min, recommended for development)
 python benchmarks/benchmark_backgammon.py --quick
 
-# Full benchmark with multiple batch sizes
+# Full GPU benchmark with multiple batch sizes
 python benchmarks/benchmark_backgammon.py --batch-sizes 1000,2000,4000 --num-batches 3
+
+# CPU benchmark (set JAX_PLATFORMS before running)
+JAX_PLATFORMS=cpu python benchmarks/benchmark_backgammon.py --batch-sizes 1,10,50,100,200 --num-batches 5 --short-game
 
 # Save results to JSON
 python benchmarks/benchmark_backgammon.py --quick --output-json benchmarks/benchmark_results.json
