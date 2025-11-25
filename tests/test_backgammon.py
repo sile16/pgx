@@ -5,8 +5,6 @@ import jax.numpy as jnp
 from pgx.backgammon import (
     State,
     _flip_board,
-    _calc_src,
-    _calc_tgt,
     _calc_win_score,
     _change_turn,
     _is_action_legal,
@@ -133,8 +131,6 @@ observe = jax.jit(env.observe)
 
 # Original functions for older tests
 _no_winning_step = jax.jit(_no_winning_step)
-_calc_src = jax.jit(_calc_src)
-_calc_tgt = jax.jit(_calc_tgt)
 _calc_win_score = jax.jit(_calc_win_score)
 _change_turn = jax.jit(_change_turn)
 _is_action_legal = jax.jit(_is_action_legal)
@@ -428,15 +424,34 @@ def test_distance_to_goal():
     assert _rear_distance(board) == _distance_to_goal(19)
 
 
-def test_calc_src():
-    assert _calc_src(1) == 24
-    assert _calc_src(2) == 0
+def test_decompose_action():
+    """Test that _decompose_action correctly decomposes actions into src, die, tgt."""
+    # Test src calculation (formerly _calc_src)
+    # action = src_raw * 6 + (die - 1), so for src_raw=1 (bar) with die=1: action = 1*6 + 0 = 6
+    src, die, tgt = _decompose_action(6)  # src_raw=1, die=1
+    assert src == 24  # bar
 
+    src, die, tgt = _decompose_action(12)  # src_raw=2, die=1
+    assert src == 0  # point 0
 
-def test_calc_tgt():
-    assert _calc_tgt(24, 1) == 0  # bar to board (die is transformed from 0~5 -> 1~ 6)
-    assert _calc_tgt(6, 2) == 8  # board to board
-    assert _calc_tgt(23, 6) == 26  # to off
+    # Test tgt calculation (formerly _calc_tgt)
+    # bar to board: src_raw=1 (bar=24), die=1 -> tgt should be die-1 = 0
+    src, die, tgt = _decompose_action(6)  # src_raw=1, die=1
+    assert tgt == 0  # bar -> point 0
+
+    # board to board: src=6, die=2 -> tgt = src + die = 8
+    # src_raw = src + 2 = 8, action = 8*6 + (2-1) = 49
+    src, die, tgt = _decompose_action(49)
+    assert src == 6
+    assert die == 2
+    assert tgt == 8  # 6 + 2 = 8
+
+    # to off: src=23, die=6 -> tgt should be 26 (off)
+    # src_raw = 23 + 2 = 25, action = 25*6 + (6-1) = 155
+    src, die, tgt = _decompose_action(155)
+    assert src == 23
+    assert die == 6
+    assert tgt == 26  # off
 
 
 def test_is_action_legal():
@@ -579,24 +594,24 @@ def test_stochastic_state():
     state: State = env.init(jax.random.PRNGKey(0))  # type: ignore
     
     # New game state should be stochastic (needs dice)
-    assert state.is_stochastic  # type: ignore
+    assert state._is_stochastic  # type: ignore
     
     # After a stochastic step with doubles, it should no longer be stochastic
     stochastic_action = 0  # Using double 1's (action 0)
     new_state: State = env.stochastic_step(state, jnp.array(stochastic_action))  # type: ignore
-    assert not new_state.is_stochastic  # type: ignore
+    assert not new_state._is_stochastic  # type: ignore
     
     # With doubles, player should be able to make 4 moves before state becomes stochastic again
     for _ in range(4):
         # State should remain non-stochastic during moves
-        assert not new_state.is_stochastic  # type: ignore
+        assert not new_state._is_stochastic  # type: ignore
         
         # Make a move
         legal_action = jnp.where(new_state.legal_action_mask)[0][0]
         new_state = env.step(new_state, legal_action, jax.random.PRNGKey(1))  # type: ignore
     
     # After all 4 moves are made, state should be stochastic again
-    assert new_state.is_stochastic  # type: ignore
+    assert new_state._is_stochastic  # type: ignore
 
 
 def test_stochastic_actions():
@@ -628,7 +643,7 @@ def test_stochastic_step():
     assert jnp.array_equal(new_state._dice, jnp.array([0, 0]))  # type: ignore
     
     # Check that state is no longer stochastic
-    assert not new_state.is_stochastic  # type: ignore
+    assert not new_state._is_stochastic  # type: ignore
     
     # Check that playable dice are set correctly for doubles (4 dice of the same value)
     assert jnp.array_equal(new_state._playable_dice, jnp.array([0, 0, 0, 0]))  # type: ignore
@@ -655,7 +670,7 @@ def test_stochastic_simple_doubles():
     stochastic_action = 0
     new_state: State = env_simple.stochastic_step(state, jnp.array(stochastic_action))  # type: ignore
     assert jnp.array_equal(new_state._dice, jnp.array([0, 0]))  # type: ignore
-    assert not new_state.is_stochastic  # type: ignore
+    assert not new_state._is_stochastic  # type: ignore
     
 
 def test_stochastic_game_simulation():
@@ -664,9 +679,9 @@ def test_stochastic_game_simulation():
     state: State = env.init(jax.random.PRNGKey(42))  # type: ignore
     
     # Test roll: 1,6 (action index 10)
-    assert state.is_stochastic  # type: ignore
+    assert state._is_stochastic  # type: ignore
     state = env.stochastic_step(state, jnp.array(10))  # type: ignore
-    assert not state.is_stochastic  # type: ignore
+    assert not state._is_stochastic  # type: ignore
     assert jnp.array_equal(state._dice, jnp.array([0, 5]))  # type: ignore
     
     # Make a move using the first die
@@ -675,7 +690,7 @@ def test_stochastic_game_simulation():
     
     # Make another move if the turn hasn't changed
     for x in range(20):
-        if state.is_stochastic:  # type: ignore
+        if state._is_stochastic:  # type: ignore
             # Turn has changed, and we need new dice
             # Let's roll doubles: 3,3 (action index 2)
             state = env.stochastic_step(state, jnp.array(2))  # type: ignore

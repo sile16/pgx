@@ -37,7 +37,7 @@ class State(core.State):
     rewards: Array = jnp.float32([0.0, 0.0])
     terminated: Array = FALSE
     truncated: Array = FALSE
-    is_stochastic: Array = jnp.array(True, dtype=jnp.bool_)  # whether the state is in stochastic mode
+    _is_stochastic: Array = jnp.array(True, dtype=jnp.bool_)  # whether the state is in stochastic mode
     # micro action = 6 * src + die
     legal_action_mask: Array = jnp.zeros(6 * 26, dtype=jnp.bool_)
     _step_count: Array = jnp.int32(0)
@@ -151,7 +151,7 @@ class Backgammon(core.Env):
             _playable_dice=playable_dice,
             _played_dice_num=played_dice_num,
             legal_action_mask=legal_action_mask,
-            is_stochastic=jnp.array(False, dtype=jnp.bool_),
+            _is_stochastic=jnp.array(False, dtype=jnp.bool_),
         )
     
     def stochastic_step(self, state: State, action: Array) -> State:
@@ -206,7 +206,7 @@ def _init(rng: PRNGKey) -> State:
         _played_dice_num=played_dice_num,
         _turn=turn,
         legal_action_mask=legal_action_mask,
-        is_stochastic=jnp.array(True, dtype=jnp.bool_)  #initial state is stochastic, as it requires a dice roll
+        _is_stochastic=jnp.array(True, dtype=jnp.bool_)  #initial state is stochastic, as it requires a dice roll
     )
     return state
 
@@ -364,7 +364,7 @@ def _change_turn(state: State, key) -> State:
         _playable_dice=playable_dice,
         _played_dice_num=played_dice_num,
         legal_action_mask=legal_action_mask,
-        is_stochastic=jnp.array(True, dtype=jnp.bool_) , #after a player change it's a stochastic state
+        _is_stochastic=jnp.array(True, dtype=jnp.bool_) , #after a player change it's a stochastic state
     )
 
 
