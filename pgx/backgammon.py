@@ -577,44 +577,49 @@ def _remains_at_inner(board: Array) -> bool:
 
 def _get_valid_sequence_mask(board: Array, die_first: int, die_second: int) -> Array:
     """
-    Calculates a mask of valid moves for 'die_first' that ALSO allow 'die_second' 
+    Calculates a mask of valid moves for 'die_first' that ALSO allow 'die_second'
     to be played afterwards.
-    
-    Strategy: Speculative Batching (Vectorization)
-    1. Identify all legal moves for die_first.
-    2. Apply ALL of them simultaneously to create a batch of 156 theoretical next boards.
-    3. Check if die_second is legal on those 156 boards in parallel.
+
+    Refactor #4: Focused Candidate Search
+    Optimization: Only process the 26 actions that correspond to 'die_first'.
+    Previously, we processed all 156 actions, wasting 83% of compute on
+    actions that didn't match the die.
     """
-    # 1. Create a vector of all 156 possible actions (26 positions * 6 dice faces)
-    all_actions = jnp.arange(26 * 6, dtype=jnp.int32)
+    # 1. Identify candidates: Only check sources 0..25 combined with die_first
+    # Shape: (26,) - specific action indices
+    src_indices = jnp.arange(26, dtype=jnp.int32)
+    candidate_actions = src_indices * 6 + (die_first - 1)
 
-    # 2. Determine which first moves are valid for die_first
-    # Must match the die face AND be a legal move on the current board
-    is_correct_die = (all_actions % 6) == (die_first - 1)
-    
-    # We vmap _is_action_legal to check all 156 actions at once against the current board
-    is_legal_first_move = jax.vmap(_is_action_legal, in_axes=(None, 0))(board, all_actions)
-    
-    mask_first_move = is_correct_die & is_legal_first_move
+    # 2. Check legality of these specific actions on current board
+    # Shape: (26,)
+    is_legal_first_move = jax.vmap(_is_action_legal, in_axes=(None, 0))(board, candidate_actions)
 
-    # 3. Speculate: Apply ALL 156 actions to create 156 new board states
-    # Even if the move is illegal, we compute the board (it will be filtered out by mask_first_move later)
-    # Shape: (156, 28)
-    next_boards = jax.vmap(_move, in_axes=(None, 0))(board, all_actions)
+    # 3. Speculate: Apply ONLY the 26 candidate actions
+    # Shape: (26, 28)
+    # This reduces the memory/compute footprint of the next step by 6x
+    next_boards = jax.vmap(_move, in_axes=(None, 0))(board, candidate_actions)
 
     # 4. Check future legality: Is die_second playable on these new boards?
-    # We map over the 0-th axis of next_boards (the 156 hypothetical states)
-    # Shape: (156, 156) -> Boolean mask of legal moves for die_second on each board
-    future_legal_masks = jax.vmap(_legal_action_mask_for_valid_single_dice, in_axes=(0, None))(
-        next_boards, die_second - 1
+    # We use a localized helper to avoid generating the full 156-bool mask
+    def _check_any_move(b, d):
+        # Check if *any* source allows moving 'd'
+        # We construct the 26 possible actions for die 'd'
+        acts = jnp.arange(26, dtype=jnp.int32) * 6 + (d - 1)
+        return jax.vmap(_is_action_legal, in_axes=(None, 0))(b, acts).any()
+
+    # Shape: (26,)
+    can_play_second_die = jax.vmap(_check_any_move, in_axes=(0, None))(
+        next_boards, die_second
     )
 
-    # We only care if *any* move is possible for the second die
-    # Shape: (156,)
-    can_play_second_die = future_legal_masks.any(axis=1)
+    # 5. Combine: valid if first move is legal AND second move is possible
+    # Shape: (26,)
+    valid_candidates = is_legal_first_move & can_play_second_die
 
-    # 5. Combine: The sequence is valid if the first move is legal AND the second move is possible
-    return mask_first_move & can_play_second_die
+    # 6. Scatter: Map the 26 results back to the full 156-action space
+    # Initialize full mask as False, then update the specific indices
+    full_mask = jnp.zeros(26 * 6, dtype=jnp.bool_)
+    return full_mask.at[candidate_actions].set(valid_candidates)
 
 def _can_play_two_dice(board: Array, die1: int, die2: int) -> Array:
     """
