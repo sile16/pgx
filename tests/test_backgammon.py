@@ -23,7 +23,9 @@ from pgx.backgammon import (
     stochastic_action_to_str,
     _decompose_action,
     _off_idx,
-    turn_to_str
+    turn_to_str,
+    _get_valid_sequence_mask,
+    _legal_action_mask_for_valid_single_dice,
 )
 import os
 from pgx._src.api_test import (
@@ -910,3 +912,85 @@ def test_must_play_lower_die_if_higher_is_blocked():
     assert len(legal_actions) == 1, "Should only have 1 legal move (the lower die)"
     assert action_to_str(action_using_1) == "1/2 (die: 1)"
     assert action_to_str(action_using_6) == "1/7 (die: 6)"
+
+
+# ==============================================================================
+# == OPTIMIZATION CORRECTNESS TESTS ============================================
+# ==============================================================================
+
+def test_candidate_action_generation():
+    """
+    Verifies that the optimized candidate action generation produces the same
+    indices as the original filter-based approach.
+
+    The optimization in _get_valid_sequence_mask generates candidate actions
+    directly via `src * 6 + (die_first - 1)` instead of filtering all 156 actions.
+    """
+    for die_first in range(1, 7):
+        # New approach: direct indexing
+        src_indices = jnp.arange(26, dtype=jnp.int32)
+        candidate_actions = src_indices * 6 + (die_first - 1)
+
+        # Old approach: filter all 156
+        all_actions = jnp.arange(26 * 6, dtype=jnp.int32)
+        is_correct_die = (all_actions % 6) == (die_first - 1)
+        old_candidates = all_actions[is_correct_die]
+
+        assert jnp.array_equal(candidate_actions, old_candidates), \
+            f"Mismatch for die_first={die_first}"
+
+    print("All candidate action generation tests passed!")
+
+
+def test_get_valid_sequence_mask_optimization():
+    """
+    Verifies that the optimized _get_valid_sequence_mask produces identical
+    results to the original implementation.
+
+    This test compares the new focused candidate search (26 actions) against
+    the original approach that processed all 156 actions.
+    """
+    import pgx
+
+    # Define the original implementation for comparison
+    def _get_valid_sequence_mask_old(board, die_first, die_second):
+        all_actions = jnp.arange(26 * 6, dtype=jnp.int32)
+        is_correct_die = (all_actions % 6) == (die_first - 1)
+        is_legal_first_move = jax.vmap(_is_action_legal, in_axes=(None, 0))(board, all_actions)
+        mask_first_move = is_correct_die & is_legal_first_move
+        next_boards = jax.vmap(_move, in_axes=(None, 0))(board, all_actions)
+        future_legal_masks = jax.vmap(_legal_action_mask_for_valid_single_dice, in_axes=(0, None))(
+            next_boards, die_second - 1
+        )
+        can_play_second_die = future_legal_masks.any(axis=1)
+        return mask_first_move & can_play_second_die
+
+    # Test with the standard starting board
+    env = pgx.make("backgammon")
+    state = env.init(jax.random.PRNGKey(42))
+    board = state._board
+
+    # Compare for all non-doubles die combinations
+    for die_first in range(1, 7):
+        for die_second in range(1, 7):
+            if die_first == die_second:
+                continue
+
+            old_mask = _get_valid_sequence_mask_old(board, die_first, die_second)
+            new_mask = _get_valid_sequence_mask(board, die_first, die_second)
+
+            assert jnp.array_equal(old_mask, new_mask), \
+                f"Mismatch for die_first={die_first}, die_second={die_second}"
+
+            # Verify mask shape is correct
+            assert new_mask.shape == (156,), f"Wrong shape: {new_mask.shape}"
+
+            # Verify only positions for die_first have True values
+            mask_indices = jnp.where(new_mask)[0]
+            for idx in mask_indices.tolist():
+                die_at_idx = idx % 6
+                expected_die = die_first - 1
+                assert die_at_idx == expected_die, \
+                    f"Wrong die at index {idx}: got {die_at_idx}, expected {expected_die}"
+
+    print("All _get_valid_sequence_mask optimization tests passed!")
