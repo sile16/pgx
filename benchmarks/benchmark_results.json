@@ -701,6 +701,61 @@
           "games_3pt": 65
         }
       ]
+    },
+    {
+      "timestamp": "2025-11-25T12:00:00.000000",
+      "git_commit": "80c0e4e967e13fba20e03c7e44dab99a7857b4af",
+      "git_commit_short": "80c0e4e",
+      "device": "cpu:Apple M1",
+      "jax_version": "0.8.1",
+      "config": {
+        "short_game": true,
+        "max_steps": 5000,
+        "num_batches": 3
+      },
+      "best_result": {
+        "batch_size": 50,
+        "games_per_second": 46.3,
+        "steps_per_second": 12348.0,
+        "moves_per_second": 8740.6
+      },
+      "all_results": [
+        {
+          "batch_size": 1,
+          "elapsed_time": 0.13,
+          "games_per_second": 23.6,
+          "steps_per_second": 5984.8,
+          "moves_per_second": 4178.4
+        },
+        {
+          "batch_size": 10,
+          "elapsed_time": 0.89,
+          "games_per_second": 33.6,
+          "steps_per_second": 8269.6,
+          "moves_per_second": 5865.9
+        },
+        {
+          "batch_size": 25,
+          "elapsed_time": 1.91,
+          "games_per_second": 39.3,
+          "steps_per_second": 10084.9,
+          "moves_per_second": 7146.3
+        },
+        {
+          "batch_size": 50,
+          "elapsed_time": 3.24,
+          "games_per_second": 46.3,
+          "steps_per_second": 12348.0,
+          "moves_per_second": 8740.6
+        },
+        {
+          "batch_size": 100,
+          "elapsed_time": 7.10,
+          "games_per_second": 42.3,
+          "steps_per_second": 11292.7,
+          "moves_per_second": 7990.9
+        }
+      ]
     }
   ]
 }

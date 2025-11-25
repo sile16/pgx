@@ -114,3 +114,6 @@ python -m pytest tests/test_backgammon.py -v
 - CPU: Intel Core i7-10700K @ 3.80GHz (8 cores, 16 threads)
   - Optimal batch size: 100 (121 games/sec)
   - Use `JAX_PLATFORMS=cpu` to run on CPU
+- Apple M1 (CPU)
+  - Optimal batch size: 50 (46.3 games/sec)
+  - Use `JAX_PLATFORMS=cpu` to run on CPU
