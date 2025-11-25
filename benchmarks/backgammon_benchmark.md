@@ -15,9 +15,10 @@ This document tracks performance optimizations made to the PGX Backgammon implem
 | 1181cc0 | Lookup table for action decomposition | 17.5 | +22% |
 | 1181cc0 | + JAX while_loop (eliminate Python loop) | 96.6 | +5.5x |
 | 0681f75 | + Focused candidate search optimization | 4,858 | +50x |
-| Current | + Direct scatter in `_legal_action_mask_for_valid_single_dice` | 4,171* | +12.5%** |
+| aeb544e | + Direct scatter in `_legal_action_mask_for_valid_single_dice` | 4,171* | +12.5%** |
+| Current | + Fused mask computation, hoisted constants | 5,797 | +19% |
 
-*Note: Current benchmark uses short game mode for faster iteration; baseline 4,858 was measured differently.
+*Note: Benchmarks use short game mode for faster iteration.
 
 **Improvement measured against pre-optimization baseline of 3,706 games/sec in current benchmark setup.
 
@@ -87,29 +88,44 @@ Simplified `_to_playable_dice_count` to use histogram-style counting instead of 
 Simplified `_update_playable_dice` using `jnp.where` and `jnp.argmax` instead of vmap + tile.
 
 ### 7. Simplified Set Playable Dice (Refactor #8)
-**Commit:** Current
+**Commit:** aeb544e
 
 Simplified `_set_playable_dice` using `jnp.where` instead of arithmetic with array literals.
+
+### 8. Fused Mask Computation (Refactor #9)
+**Commit:** Current
+
+Fused `_can_play_two_dice` and `_get_forced_full_move_mask` into a single `_compute_two_dice_masks` function. Previously, `_apply_special_backgammon_rules` would call both functions which each computed the same two sequence masks independently (4 calls to `_get_valid_sequence_mask`). Now computes both masks once (2 calls).
+
+```python
+# Before: Redundant computation
+can_play_both = _can_play_two_dice(board, d1, d2)  # 2 calls to _get_valid_sequence_mask
+if can_play_both:
+    mask = _get_forced_full_move_mask(board, d1, d2)  # 2 MORE calls (same masks!)
+
+# After: Compute once, reuse
+mask_d1_d2, mask_d2_d1, can_play_both = _compute_two_dice_masks(board, d1, d2)  # 2 calls total
+forced_full_move_mask = mask_d1_d2 | mask_d2_d1  # Reuse computed masks
+```
+
+### 9. Hoisted Constant Array Allocations (Refactor #10)
+**Commit:** Current
+
+Hoisted frequently-used constant arrays to module level:
+- `_SRC_INDICES = jnp.arange(26, dtype=jnp.int32)` - used in 3 functions
+- `_NO_OP_MASK` - the no-op legal action mask
+
+This avoids repeated array allocation in JIT-compiled code.
 
 ## Future Optimization Opportunities
 
 ### High Priority
 
-1. **Hoist Constant Array Allocations**
-   - `jnp.arange(26, dtype=jnp.int32)` is created repeatedly in multiple functions
-   - Could be a module-level constant `_SRC_INDICES`
-   - Potential impact: Low-medium (depends on JIT caching behavior)
+~~1. **Hoist Constant Array Allocations** - DONE (Refactor #10)~~
 
-2. **Fuse Operations in Special Rules**
-   - `_can_play_two_dice` and `_get_forced_full_move_mask` compute overlapping work
-   - Both call `_get_valid_sequence_mask` with the same arguments
-   - Could cache/reuse the sequence masks
-   - Potential impact: Medium (only affects non-doubles first move)
+~~2. **Fuse Operations in Special Rules** - DONE (Refactor #9)~~
 
-3. **Early Exit for Doubles**
-   - The special backgammon rules (must play both dice, must play higher) only apply to non-doubles
-   - For doubles, we could skip computing the special rule masks entirely
-   - Currently handled by `jax.lax.cond` but the simple mask is still computed
+~~3. **Early Exit for Doubles** - Already implemented via `jax.lax.cond`~~
 
 ### Medium Priority
 

@@ -1,0 +1,584 @@
+{
+  "benchmark_runs": [
+    {
+      "timestamp": "2025-11-24T17:28:15.176055",
+      "git_commit": "c14fcf837d61b1471e02263cabd7e46185ca3173",
+      "git_commit_short": "c14fcf8",
+      "device": "gpu:NVIDIA GeForce RTX 4090",
+      "jax_version": "0.8.1",
+      "config": {
+        "short_game": true,
+        "max_steps": 5000,
+        "num_batches": 3
+      },
+      "best_result": {
+        "batch_size": 1000,
+        "games_per_second": 14.365754008575193,
+        "steps_per_second": 2233.4006784511594
+      },
+      "all_results": [
+        {
+          "batch_size": 1000,
+          "num_games": 3000,
+          "total_steps": 466401,
+          "elapsed_time": 208.82997148699906,
+          "games_per_second": 14.365754008575193,
+          "steps_per_second": 2233.4006784511594
+        }
+      ]
+    },
+    {
+      "timestamp": "2025-11-24T17:36:18.530041",
+      "git_commit": "1181cc0d40ac50551d13a7bd1f3177686fd049c7",
+      "git_commit_short": "1181cc0",
+      "device": "gpu:NVIDIA GeForce RTX 4090",
+      "jax_version": "0.8.1",
+      "config": {
+        "short_game": true,
+        "max_steps": 5000,
+        "num_batches": 3
+      },
+      "best_result": {
+        "batch_size": 1000,
+        "games_per_second": 17.478848143852407,
+        "steps_per_second": 2717.384084380302
+      },
+      "all_results": [
+        {
+          "batch_size": 1000,
+          "num_games": 3000,
+          "total_steps": 466401,
+          "elapsed_time": 171.63602402799916,
+          "games_per_second": 17.478848143852407,
+          "steps_per_second": 2717.384084380302
+        }
+      ]
+    },
+    {
+      "timestamp": "2025-11-24T17:47:19.802445",
+      "git_commit": "b8228a4486178e8460ce2aa5c0a00afc6cdfd88b",
+      "git_commit_short": "b8228a4",
+      "device": "gpu:NVIDIA GeForce RTX 4090",
+      "jax_version": "0.8.1",
+      "config": {
+        "short_game": true,
+        "max_steps": 5000,
+        "num_batches": 3
+      },
+      "best_result": {
+        "batch_size": 1000,
+        "games_per_second": 17.48230853755208,
+        "steps_per_second": 2717.9220614076094
+      },
+      "all_results": [
+        {
+          "batch_size": 1000,
+          "num_games": 3000,
+          "total_steps": 466401,
+          "elapsed_time": 171.6020509279988,
+          "games_per_second": 17.48230853755208,
+          "steps_per_second": 2717.9220614076094
+        }
+      ]
+    },
+    {
+      "timestamp": "2025-11-24T17:54:32.750294",
+      "git_commit": "1181cc0d40ac50551d13a7bd1f3177686fd049c7",
+      "git_commit_short": "1181cc0",
+      "device": "gpu:NVIDIA GeForce RTX 4090",
+      "jax_version": "0.8.1",
+      "config": {
+        "short_game": true,
+        "max_steps": 5000,
+        "num_batches": 3
+      },
+      "best_result": {
+        "batch_size": 1000,
+        "games_per_second": 17.548224283488874,
+        "steps_per_second": 2728.169784681165
+      },
+      "all_results": [
+        {
+          "batch_size": 1000,
+          "num_games": 3000,
+          "total_steps": 466401,
+          "elapsed_time": 170.95746848999988,
+          "games_per_second": 17.548224283488874,
+          "steps_per_second": 2728.169784681165,
+          "avg_steps_per_game": 155.4669952392578,
+          "min_steps": 66,
+          "max_steps": 548,
+          "games_1pt": 2,
+          "games_2pt": 1,
+          "games_3pt": 0
+        }
+      ]
+    },
+    {
+      "timestamp": "2025-11-24T18:46:44.451198",
+      "git_commit": "1181cc0d40ac50551d13a7bd1f3177686fd049c7",
+      "git_commit_short": "1181cc0",
+      "device": "gpu:NVIDIA GeForce RTX 4090",
+      "jax_version": "0.8.1",
+      "config": {
+        "short_game": true,
+        "max_steps": 5000,
+        "num_batches": 3
+      },
+      "best_result": {
+        "batch_size": 1000,
+        "games_per_second": 17.567567397747776,
+        "steps_per_second": 2731.1770006256534
+      },
+      "all_results": [
+        {
+          "batch_size": 1000,
+          "num_games": 3000,
+          "total_steps": 466401,
+          "elapsed_time": 170.76923241999975,
+          "games_per_second": 17.567567397747776,
+          "steps_per_second": 2731.1770006256534,
+          "avg_steps_per_game": 155.4669952392578,
+          "min_steps": 66,
+          "max_steps": 548,
+          "games_1pt": 2031,
+          "games_2pt": 748,
+          "games_3pt": 221
+        },
+        {
+          "batch_size": 2000,
+          "num_games": 6000,
+          "total_steps": 932641,
+          "elapsed_time": 379.5495776230018,
+          "games_per_second": 15.808211505796134,
+          "steps_per_second": 2457.2310311628685,
+          "avg_steps_per_game": 155.44017028808594,
+          "min_steps": 66,
+          "max_steps": 584,
+          "games_1pt": 4040,
+          "games_2pt": 1521,
+          "games_3pt": 439
+        }
+      ]
+    },
+    {
+      "timestamp": "2025-11-24T19:46:40.117283",
+      "git_commit": "1181cc0d40ac50551d13a7bd1f3177686fd049c7",
+      "git_commit_short": "1181cc0",
+      "device": "gpu:NVIDIA GeForce RTX 4090",
+      "jax_version": "0.8.1",
+      "config": {
+        "short_game": true,
+        "max_steps": 5000,
+        "num_batches": 3
+      },
+      "best_result": {
+        "batch_size": 1000,
+        "games_per_second": 96.57526942527943,
+        "steps_per_second": 15014.267411739916
+      },
+      "all_results": [
+        {
+          "batch_size": 1000,
+          "num_games": 3000,
+          "total_steps": 466401,
+          "elapsed_time": 31.063853281000775,
+          "games_per_second": 96.57526942527943,
+          "steps_per_second": 15014.267411739916,
+          "avg_steps_per_game": 155.4669952392578,
+          "min_steps": 66,
+          "max_steps": 548,
+          "games_1pt": 2031,
+          "games_2pt": 748,
+          "games_3pt": 221
+        },
+        {
+          "batch_size": 2000,
+          "num_games": 6000,
+          "total_steps": 932641,
+          "elapsed_time": 68.76903717700043,
+          "games_per_second": 87.24856776105453,
+          "steps_per_second": 13561.931914206276,
+          "avg_steps_per_game": 155.44017028808594,
+          "min_steps": 66,
+          "max_steps": 584,
+          "games_1pt": 4040,
+          "games_2pt": 1521,
+          "games_3pt": 439
+        },
+        {
+          "batch_size": 4000,
+          "num_games": 12000,
+          "total_steps": 1864138,
+          "elapsed_time": 141.71189713100102,
+          "games_per_second": 84.67884661022487,
+          "steps_per_second": 13154.421313524279,
+          "avg_steps_per_game": 155.34483337402344,
+          "min_steps": 66,
+          "max_steps": 584,
+          "games_1pt": 8057,
+          "games_2pt": 3062,
+          "games_3pt": 881
+        }
+      ]
+    },
+    {
+      "timestamp": "2025-11-24T20:17:37.378262",
+      "git_commit": "1181cc0d40ac50551d13a7bd1f3177686fd049c7",
+      "git_commit_short": "1181cc0",
+      "device": "gpu:NVIDIA GeForce RTX 4090",
+      "jax_version": "0.8.1",
+      "config": {
+        "short_game": true,
+        "max_steps": 5000,
+        "num_batches": 3
+      },
+      "best_result": {
+        "batch_size": 1000,
+        "games_per_second": 96.58775213595638,
+        "steps_per_second": 15016.208061320729,
+        "moves_per_second": 10625.071281881124
+      },
+      "all_results": [
+        {
+          "batch_size": 1000,
+          "num_games": 3000,
+          "total_steps": 466401,
+          "total_moves": 330013,
+          "elapsed_time": 31.05983868200201,
+          "games_per_second": 96.58775213595638,
+          "steps_per_second": 15016.208061320729,
+          "moves_per_second": 10625.071281881124,
+          "avg_steps_per_game": 155.4669952392578,
+          "avg_moves_per_game": 110.00433349609375,
+          "min_steps": 66,
+          "max_steps": 548,
+          "games_1pt": 2031,
+          "games_2pt": 748,
+          "games_3pt": 221
+        },
+        {
+          "batch_size": 2000,
+          "num_games": 6000,
+          "total_steps": 932641,
+          "total_moves": 659978,
+          "elapsed_time": 68.76484629400147,
+          "games_per_second": 87.25388513699615,
+          "steps_per_second": 13562.758448008872,
+          "moves_per_second": 9597.607434157408,
+          "avg_steps_per_game": 155.44017028808594,
+          "avg_moves_per_game": 109.99633026123047,
+          "min_steps": 66,
+          "max_steps": 584,
+          "games_1pt": 4040,
+          "games_2pt": 1521,
+          "games_3pt": 439
+        },
+        {
+          "batch_size": 4000,
+          "num_games": 12000,
+          "total_steps": 1864138,
+          "total_moves": 1319439,
+          "elapsed_time": 141.79589532499813,
+          "games_per_second": 84.62868387336485,
+          "steps_per_second": 13146.628791527217,
+          "moves_per_second": 9305.198835099054,
+          "avg_steps_per_game": 155.34483337402344,
+          "avg_moves_per_game": 109.9532470703125,
+          "min_steps": 66,
+          "max_steps": 584,
+          "games_1pt": 8057,
+          "games_2pt": 3062,
+          "games_3pt": 881
+        }
+      ]
+    },
+    {
+      "timestamp": "2025-11-24T20:47:33.052218",
+      "git_commit": "a88f8cac365ac8c9414b70ea5b1ad7aea7ca946f",
+      "git_commit_short": "a88f8ca",
+      "device": "gpu:NVIDIA GeForce RTX 4090",
+      "jax_version": "0.8.1",
+      "config": {
+        "short_game": true,
+        "max_steps": 5000,
+        "num_batches": 3
+      },
+      "best_result": {
+        "batch_size": 1000,
+        "games_per_second": 96.57088023876852,
+        "steps_per_second": 15013.585038080626,
+        "moves_per_second": 10623.215300078906
+      },
+      "all_results": [
+        {
+          "batch_size": 1000,
+          "num_games": 3000,
+          "total_steps": 466401,
+          "total_moves": 330013,
+          "elapsed_time": 31.065265146000456,
+          "games_per_second": 96.57088023876852,
+          "steps_per_second": 15013.585038080626,
+          "moves_per_second": 10623.215300078906,
+          "avg_steps_per_game": 155.4669952392578,
+          "avg_moves_per_game": 110.00433349609375,
+          "min_steps": 66,
+          "max_steps": 548,
+          "games_1pt": 2031,
+          "games_2pt": 748,
+          "games_3pt": 221
+        },
+        {
+          "batch_size": 2000,
+          "num_games": 6000,
+          "total_steps": 932641,
+          "total_moves": 659978,
+          "elapsed_time": 68.7813094209996,
+          "games_per_second": 87.23300051290012,
+          "steps_per_second": 13559.512138558612,
+          "moves_per_second": 9595.310202083798,
+          "avg_steps_per_game": 155.44017028808594,
+          "avg_moves_per_game": 109.99633026123047,
+          "min_steps": 66,
+          "max_steps": 584,
+          "games_1pt": 4040,
+          "games_2pt": 1521,
+          "games_3pt": 439
+        },
+        {
+          "batch_size": 4000,
+          "num_games": 12000,
+          "total_steps": 1864138,
+          "total_moves": 1319439,
+          "elapsed_time": 141.77291615300055,
+          "games_per_second": 84.64240085919984,
+          "steps_per_second": 13148.759654405589,
+          "moves_per_second": 9306.707062271815,
+          "avg_steps_per_game": 155.34483337402344,
+          "avg_moves_per_game": 109.9532470703125,
+          "min_steps": 66,
+          "max_steps": 584,
+          "games_1pt": 8057,
+          "games_2pt": 3062,
+          "games_3pt": 881
+        }
+      ]
+    },
+    {
+      "timestamp": "2025-11-24T20:56:07.539476",
+      "git_commit": "a88f8cac365ac8c9414b70ea5b1ad7aea7ca946f",
+      "git_commit_short": "a88f8ca",
+      "device": "gpu:NVIDIA GeForce RTX 4090",
+      "jax_version": "0.8.1",
+      "config": {
+        "short_game": true,
+        "max_steps": 5000,
+        "num_batches": 3
+      },
+      "best_result": {
+        "batch_size": 2000,
+        "games_per_second": 4858.134760789584,
+        "steps_per_second": 755149.2769062597,
+        "moves_per_second": 534377.0105260647
+      },
+      "all_results": [
+        {
+          "batch_size": 1000,
+          "num_games": 3000,
+          "total_steps": 466401,
+          "total_moves": 330013,
+          "elapsed_time": 0.8074894079982187,
+          "games_per_second": 3715.219011277258,
+          "steps_per_second": 577593.9540262414,
+          "moves_per_second": 408690.1905228805,
+          "avg_steps_per_game": 155.4669952392578,
+          "avg_moves_per_game": 110.00433349609375,
+          "min_steps": 66,
+          "max_steps": 548,
+          "games_1pt": 2031,
+          "games_2pt": 748,
+          "games_3pt": 221
+        },
+        {
+          "batch_size": 2000,
+          "num_games": 6000,
+          "total_steps": 932641,
+          "total_moves": 659978,
+          "elapsed_time": 1.2350419030008197,
+          "games_per_second": 4858.134760789584,
+          "steps_per_second": 755149.2769062597,
+          "moves_per_second": 534377.0105260647,
+          "avg_steps_per_game": 155.44017028808594,
+          "avg_moves_per_game": 109.99633026123047,
+          "min_steps": 66,
+          "max_steps": 584,
+          "games_1pt": 4040,
+          "games_2pt": 1521,
+          "games_3pt": 439
+        },
+        {
+          "batch_size": 4000,
+          "num_games": 12000,
+          "total_steps": 1864138,
+          "total_moves": 1319439,
+          "elapsed_time": 2.724024995997752,
+          "games_per_second": 4405.245920147901,
+          "steps_per_second": 684332.1932577224,
+          "moves_per_second": 484371.10596950224,
+          "avg_steps_per_game": 155.34483337402344,
+          "avg_moves_per_game": 109.9532470703125,
+          "min_steps": 66,
+          "max_steps": 584,
+          "games_1pt": 8057,
+          "games_2pt": 3062,
+          "games_3pt": 881
+        }
+      ]
+    },
+    {
+      "timestamp": "2025-11-25T10:17:15.180655",
+      "git_commit": "aeb544e4f2883f223443f9f89a80f33bf83aa8f7",
+      "git_commit_short": "aeb544e",
+      "device": "gpu:NVIDIA GeForce RTX 4090",
+      "jax_version": "0.8.1",
+      "config": {
+        "short_game": true,
+        "max_steps": 5000,
+        "num_batches": 3
+      },
+      "best_result": {
+        "batch_size": 1000,
+        "games_per_second": 4142.894410504638,
+        "steps_per_second": 644083.3653179245,
+        "moves_per_second": 455736.33769795566
+      },
+      "all_results": [
+        {
+          "batch_size": 1000,
+          "num_games": 3000,
+          "total_steps": 466401,
+          "total_moves": 330013,
+          "elapsed_time": 0.7241314170096302,
+          "games_per_second": 4142.894410504638,
+          "steps_per_second": 644083.3653179245,
+          "moves_per_second": 455736.33769795566,
+          "avg_steps_per_game": 155.4669952392578,
+          "avg_moves_per_game": 110.00433349609375,
+          "min_steps": 66,
+          "max_steps": 548,
+          "games_1pt": 2031,
+          "games_2pt": 748,
+          "games_3pt": 221
+        }
+      ]
+    },
+    {
+      "timestamp": "2025-11-25T10:23:39.470036",
+      "git_commit": "aeb544e4f2883f223443f9f89a80f33bf83aa8f7",
+      "git_commit_short": "aeb544e",
+      "device": "gpu:NVIDIA GeForce RTX 4090",
+      "jax_version": "0.8.1",
+      "config": {
+        "short_game": true,
+        "max_steps": 5000,
+        "num_batches": 3
+      },
+      "best_result": {
+        "batch_size": 1000,
+        "games_per_second": 4148.7915062334805,
+        "steps_per_second": 645000.1690996004,
+        "moves_per_second": 456385.0437822098
+      },
+      "all_results": [
+        {
+          "batch_size": 1000,
+          "num_games": 3000,
+          "total_steps": 466401,
+          "total_moves": 330013,
+          "elapsed_time": 0.7231021360057639,
+          "games_per_second": 4148.7915062334805,
+          "steps_per_second": 645000.1690996004,
+          "moves_per_second": 456385.0437822098,
+          "avg_steps_per_game": 155.4669952392578,
+          "avg_moves_per_game": 110.00433349609375,
+          "min_steps": 66,
+          "max_steps": 548,
+          "games_1pt": 2031,
+          "games_2pt": 748,
+          "games_3pt": 221
+        }
+      ]
+    },
+    {
+      "timestamp": "2025-11-25T10:25:01.168611",
+      "git_commit": "aeb544e4f2883f223443f9f89a80f33bf83aa8f7",
+      "git_commit_short": "aeb544e",
+      "device": "gpu:NVIDIA GeForce RTX 4090",
+      "jax_version": "0.8.1",
+      "config": {
+        "short_game": true,
+        "max_steps": 5000,
+        "num_batches": 3
+      },
+      "best_result": {
+        "batch_size": 4000,
+        "games_per_second": 5797.058315837585,
+        "steps_per_second": 900543.0578974036,
+        "moves_per_second": 637405.4022658688
+      },
+      "all_results": [
+        {
+          "batch_size": 1000,
+          "num_games": 3000,
+          "total_steps": 466401,
+          "total_moves": 330013,
+          "elapsed_time": 0.7205391530005727,
+          "games_per_second": 4163.548902938818,
+          "steps_per_second": 647294.4572931894,
+          "moves_per_second": 458008.4213685161,
+          "avg_steps_per_game": 155.4669952392578,
+          "avg_moves_per_game": 110.00433349609375,
+          "min_steps": 66,
+          "max_steps": 548,
+          "games_1pt": 2031,
+          "games_2pt": 748,
+          "games_3pt": 221
+        },
+        {
+          "batch_size": 2000,
+          "num_games": 6000,
+          "total_steps": 932641,
+          "total_moves": 659978,
+          "elapsed_time": 1.0786205760086887,
+          "games_per_second": 5562.6604326447305,
+          "steps_per_second": 864660.864760369,
+          "moves_per_second": 611872.2511693339,
+          "avg_steps_per_game": 155.44017028808594,
+          "avg_moves_per_game": 109.99633026123047,
+          "min_steps": 66,
+          "max_steps": 584,
+          "games_1pt": 4040,
+          "games_2pt": 1521,
+          "games_3pt": 439
+        },
+        {
+          "batch_size": 4000,
+          "num_games": 12000,
+          "total_steps": 1864138,
+          "total_moves": 1319439,
+          "elapsed_time": 2.0700154019868933,
+          "games_per_second": 5797.058315837585,
+          "steps_per_second": 900543.0578974036,
+          "moves_per_second": 637405.4022658688,
+          "avg_steps_per_game": 155.34483337402344,
+          "avg_moves_per_game": 109.9532470703125,
+          "min_steps": 66,
+          "max_steps": 584,
+          "games_1pt": 8057,
+          "games_2pt": 3062,
+          "games_3pt": 881
+        }
+      ]
+    }
+  ]
+}

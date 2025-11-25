@@ -26,6 +26,11 @@ from pgx._src.types import Array, PRNGKey
 TRUE = jnp.bool_(True)
 FALSE = jnp.bool_(False)
 
+# Refactor #10: Hoist constant array allocations
+# These are used repeatedly in multiple functions
+_SRC_INDICES = jnp.arange(26, dtype=jnp.int32)
+_NO_OP_MASK = jnp.zeros(26 * 6, dtype=jnp.bool_).at[0:6].set(True)
+
 
 
 
@@ -610,8 +615,7 @@ def _get_valid_sequence_mask(board: Array, die_first: int, die_second: int) -> A
     """
     # 1. Identify candidates: Only check sources 0..25 combined with die_first
     # Shape: (26,) - specific action indices
-    src_indices = jnp.arange(26, dtype=jnp.int32)
-    candidate_actions = src_indices * 6 + (die_first - 1)
+    candidate_actions = _SRC_INDICES * 6 + (die_first - 1)
 
     # 2. Check legality of these specific actions on current board
     # Shape: (26,)
@@ -627,7 +631,7 @@ def _get_valid_sequence_mask(board: Array, die_first: int, die_second: int) -> A
     def _check_any_move(b, d):
         # Check if *any* source allows moving 'd'
         # We construct the 26 possible actions for die 'd'
-        acts = jnp.arange(26, dtype=jnp.int32) * 6 + (d - 1)
+        acts = _SRC_INDICES * 6 + (d - 1)
         return jax.vmap(_is_action_legal, in_axes=(None, 0))(b, acts).any()
 
     # Shape: (26,)
@@ -644,34 +648,28 @@ def _get_valid_sequence_mask(board: Array, die_first: int, die_second: int) -> A
     full_mask = jnp.zeros(26 * 6, dtype=jnp.bool_)
     return full_mask.at[candidate_actions].set(valid_candidates)
 
-def _can_play_two_dice(board: Array, die1: int, die2: int) -> Array:
+def _compute_two_dice_masks(board: Array, die1: int, die2: int):
     """
-    Checks if there exists a legal sequence of moves for two different dice.
-    Refactored to use vectorization instead of loops.
+    Computes valid sequence masks for both dice orderings.
+
+    Refactor #9: Fused computation - compute both masks once and return them.
+    Previously, _can_play_two_dice and _get_forced_full_move_mask would
+    each compute these same masks independently, resulting in 4 calls to
+    _get_valid_sequence_mask instead of 2.
+
+    Returns:
+        Tuple of (mask_d1_then_d2, mask_d2_then_d1, can_play_both)
     """
     # Check sequence die1 -> die2
     mask_d1_then_d2 = _get_valid_sequence_mask(board, die1, die2)
-    
+
     # Check sequence die2 -> die1
     mask_d2_then_d1 = _get_valid_sequence_mask(board, die2, die1)
-    
-    # If any valid sequence exists in either direction, return True
-    return mask_d1_then_d2.any() | mask_d2_then_d1.any()
 
+    # Check if any valid sequence exists in either direction
+    can_play_both = mask_d1_then_d2.any() | mask_d2_then_d1.any()
 
-def _get_forced_full_move_mask(board: Array, die1: int, die2: int) -> Array:
-    """
-    Returns a mask of legal first moves, assuming both dice must be played.
-    Refactored to use vectorization instead of loops.
-    """
-    # Get valid moves starting with die1 (that allow die2 to follow)
-    mask_d1_start = _get_valid_sequence_mask(board, die1, die2)
-    
-    # Get valid moves starting with die2 (that allow die1 to follow)
-    mask_d2_start = _get_valid_sequence_mask(board, die2, die1)
-    
-    # Combine valid starting moves
-    return mask_d1_start | mask_d2_start
+    return mask_d1_then_d2, mask_d2_then_d1, can_play_both
 
 
 def _get_forced_single_move_mask(board: Array, die1: int, die2: int) -> Array:
@@ -705,20 +703,28 @@ def _apply_special_backgammon_rules(board: Array, turn_dice: Array) -> Array:
     """Computes the legal action mask considering two special backgammon rules for non-doubles:
     1. If you can play both dice, you must. A move that makes the second die unplayable is illegal.
     2. If you can only play one die, you must play the higher one if possible.
-    
+
     This function should only be called at the start of a non-double turn.
+
+    Refactor #9: Fused mask computation - compute masks once and reuse.
+    Previously called _can_play_two_dice then _get_forced_full_move_mask,
+    each of which computed the same two masks independently.
     """
     d1_0idx, d2_0idx = turn_dice[0], turn_dice[1]
     d1 = d1_0idx + 1
     d2 = d2_0idx + 1
 
-    can_play_both = _can_play_two_dice(board, d1, d2)
+    # Compute both sequence masks once (replaces 4 calls with 2)
+    mask_d1_then_d2, mask_d2_then_d1, can_play_both = _compute_two_dice_masks(board, d1, d2)
+
+    # Combine the masks for the forced full move case
+    forced_full_move_mask = mask_d1_then_d2 | mask_d2_then_d1
 
     return jax.lax.cond(
         can_play_both,
-        # Rule 1: Forced full move.
-        lambda: _get_forced_full_move_mask(board, d1, d2),
-        # Rule 2: Forced single (higher) move.
+        # Rule 1: Forced full move - use pre-computed combined mask
+        lambda: forced_full_move_mask,
+        # Rule 2: Forced single (higher) move
         lambda: _get_forced_single_move_mask(board, d1, d2),
     )
 
@@ -758,12 +764,11 @@ def _legal_action_mask(board: Array, playable_dice: Array, turn_dice: Array, pla
     )
 
     # If no moves are possible after filtering, allow no-op.
-    no_op_mask = jnp.zeros(26 * 6, dtype=jnp.bool_).at[0:6].set(TRUE)
     legal_action_exists = final_mask.any()
     return jax.lax.cond(
         legal_action_exists,
         lambda: final_mask,
-        lambda: no_op_mask
+        lambda: _NO_OP_MASK
     )
 
 
@@ -783,8 +788,7 @@ def _legal_action_mask_for_valid_single_dice(board: Array, die) -> Array:
     Refactor #5: Direct scatter instead of creating 26 full masks.
     Previously created (26, 156) intermediate array, now creates (26,) + scatter.
     """
-    src_indices = jnp.arange(26, dtype=jnp.int32)
-    actions = src_indices * 6 + die
+    actions = _SRC_INDICES * 6 + die
 
     # Check legality for all 26 actions at once - Shape: (26,)
     is_legal = jax.vmap(_is_action_legal, in_axes=(None, 0))(board, actions)
