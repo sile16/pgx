@@ -26,6 +26,8 @@ from pgx.backgammon import (
     turn_to_str,
     _get_valid_sequence_mask,
     _legal_action_mask_for_valid_single_dice,
+    _to_playable_dice_count,
+    _update_playable_dice,
 )
 import os
 from pgx._src.api_test import (
@@ -994,3 +996,82 @@ def test_get_valid_sequence_mask_optimization():
                     f"Wrong die at index {idx}: got {die_at_idx}, expected {expected_die}"
 
     print("All _get_valid_sequence_mask optimization tests passed!")
+
+
+def test_to_playable_dice_count():
+    """
+    Verifies that _to_playable_dice_count correctly counts dice values.
+    Tests the histogram-style counting optimization.
+    """
+    # Test non-doubles: dice 2,3 (0-indexed: 1,2)
+    test1 = jnp.array([1, 2, -1, -1], dtype=jnp.int32)
+    result1 = _to_playable_dice_count(test1)
+    expected1 = jnp.array([0, 1, 1, 0, 0, 0], dtype=jnp.int32)
+    assert jnp.array_equal(result1, expected1), f"Test 1 failed: {result1} != {expected1}"
+
+    # Test doubles: dice 4,4,4,4 (0-indexed: 3,3,3,3)
+    test2 = jnp.array([3, 3, 3, 3], dtype=jnp.int32)
+    result2 = _to_playable_dice_count(test2)
+    expected2 = jnp.array([0, 0, 0, 4, 0, 0], dtype=jnp.int32)
+    assert jnp.array_equal(result2, expected2), f"Test 2 failed: {result2} != {expected2}"
+
+    # Test all empty
+    test3 = jnp.array([-1, -1, -1, -1], dtype=jnp.int32)
+    result3 = _to_playable_dice_count(test3)
+    expected3 = jnp.array([0, 0, 0, 0, 0, 0], dtype=jnp.int32)
+    assert jnp.array_equal(result3, expected3), f"Test 3 failed: {result3} != {expected3}"
+
+    # Test mixed: dice 1,6 (0-indexed: 0,5)
+    test4 = jnp.array([0, 5, -1, -1], dtype=jnp.int32)
+    result4 = _to_playable_dice_count(test4)
+    expected4 = jnp.array([1, 0, 0, 0, 0, 1], dtype=jnp.int32)
+    assert jnp.array_equal(result4, expected4), f"Test 4 failed: {result4} != {expected4}"
+
+    print("All _to_playable_dice_count tests passed!")
+
+
+def test_update_playable_dice():
+    """
+    Verifies that _update_playable_dice correctly updates the playable dice array
+    after a move is made.
+    """
+    # Test non-doubles: dice [2, 4] (0-indexed: [1, 3]), play die 2 (index 1)
+    playable = jnp.array([1, 3, -1, -1], dtype=jnp.int32)
+    dice = jnp.array([1, 3], dtype=jnp.int32)
+    action = 0 * 6 + 1  # action using die 2 (index 1)
+    result = _update_playable_dice(playable, jnp.int32(0), dice, action)
+    expected = jnp.array([-1, 3, -1, -1], dtype=jnp.int32)
+    assert jnp.array_equal(result, expected), f"Non-doubles play die 2 failed: {result} != {expected}"
+
+    # Test non-doubles: dice [2, 4], play die 4 (index 3)
+    action2 = 0 * 6 + 3  # action using die 4 (index 3)
+    result2 = _update_playable_dice(playable, jnp.int32(0), dice, action2)
+    expected2 = jnp.array([1, -1, -1, -1], dtype=jnp.int32)
+    assert jnp.array_equal(result2, expected2), f"Non-doubles play die 4 failed: {result2} != {expected2}"
+
+    # Test doubles: dice [3, 3] (0-indexed: [2, 2]), play first die
+    playable_d = jnp.array([2, 2, 2, 2], dtype=jnp.int32)
+    dice_d = jnp.array([2, 2], dtype=jnp.int32)
+    action_d = 0 * 6 + 2  # action using die 3
+
+    # First move (n=0): should mark slot 3
+    result_d0 = _update_playable_dice(playable_d, jnp.int32(0), dice_d, action_d)
+    expected_d0 = jnp.array([2, 2, 2, -1], dtype=jnp.int32)
+    assert jnp.array_equal(result_d0, expected_d0), f"Doubles (n=0) failed: {result_d0} != {expected_d0}"
+
+    # Second move (n=1): should mark slot 2
+    result_d1 = _update_playable_dice(playable_d, jnp.int32(1), dice_d, action_d)
+    expected_d1 = jnp.array([2, 2, -1, 2], dtype=jnp.int32)
+    assert jnp.array_equal(result_d1, expected_d1), f"Doubles (n=1) failed: {result_d1} != {expected_d1}"
+
+    # Third move (n=2): should mark slot 1
+    result_d2 = _update_playable_dice(playable_d, jnp.int32(2), dice_d, action_d)
+    expected_d2 = jnp.array([2, -1, 2, 2], dtype=jnp.int32)
+    assert jnp.array_equal(result_d2, expected_d2), f"Doubles (n=2) failed: {result_d2} != {expected_d2}"
+
+    # Fourth move (n=3): should mark slot 0
+    result_d3 = _update_playable_dice(playable_d, jnp.int32(3), dice_d, action_d)
+    expected_d3 = jnp.array([-1, 2, 2, 2], dtype=jnp.int32)
+    assert jnp.array_equal(result_d3, expected_d3), f"Doubles (n=3) failed: {result_d3} != {expected_d3}"
+
+    print("All _update_playable_dice tests passed!")

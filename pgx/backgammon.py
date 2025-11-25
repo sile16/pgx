@@ -244,14 +244,20 @@ def _to_playable_dice_count(playable_dice: Array) -> Array:
 
     Playable dice: 4, 4, 4, 4
     Return: [0, 0, 0, 0, 4, 0]
+
+    Refactor #6: Use histogram-style counting instead of vmap + tile.
     """
-    dice_indices: Array = jnp.array([0, 1, 2, 3], dtype=jnp.int32)  # maximum number of playable dice is 4
+    # Create mask for valid dice (not -1)
+    valid_mask = playable_dice != -1
 
-    def _insert_dice_num(idx: Array, playable_dice: Array) -> Array:
-        vec: Array = jnp.zeros(6, dtype=jnp.int32)
-        return (playable_dice[idx] != -1) * vec.at[playable_dice[idx]].set(1) + (playable_dice[idx] == -1) * vec
+    # Count occurrences of each die value (0-5)
+    # For each die value i, count how many times it appears in playable_dice
+    die_values = jnp.arange(6, dtype=jnp.int32)
 
-    return jax.vmap(_insert_dice_num)(dice_indices, jnp.tile(playable_dice, (4, 1))).sum(axis=0, dtype=jnp.int32)
+    def count_die(die_val):
+        return ((playable_dice == die_val) & valid_mask).sum()
+
+    return jax.vmap(count_die)(die_values).astype(jnp.int32)
 
 
 def _winning_step(
@@ -393,11 +399,16 @@ def _init_turn(dice: Array) -> Array:
 
 def _set_playable_dice(dice: Array) -> Array:
     """
-    -1 for empty
+    Set playable dice array. -1 for empty slots.
+    - Doubles: [d, d, d, d]
+    - Non-doubles: [d1, d2, -1, -1]
+
+    Refactor #8: Use jnp.where instead of arithmetic with array literals.
     """
-    return (dice[0] == dice[1]) * jnp.array([dice[0]] * 4, dtype=jnp.int32) + (dice[0] != dice[1]) * jnp.array(
-        [dice[0], dice[1], -1, -1], dtype=jnp.int32
-    )
+    is_doubles = dice[0] == dice[1]
+    doubles_result = jnp.full(4, dice[0], dtype=jnp.int32)
+    non_doubles_result = jnp.array([dice[0], dice[1], -1, -1], dtype=jnp.int32)
+    return jnp.where(is_doubles, doubles_result, non_doubles_result)
 
 
 def _update_playable_dice(
@@ -406,16 +417,28 @@ def _update_playable_dice(
     dice: Array,
     action: Array,
 ) -> Array:
-    _n = played_dice_num
-    die_array = jnp.array([action % 6] * 4, dtype=jnp.int32)
-    dice_indices: Array = jnp.array([0, 1, 2, 3], dtype=jnp.int32)  # maximum number of playable dice is 4
+    """
+    Update playable_dice after a move.
+    - For doubles: mark slot (3 - played_dice_num) as used (-1)
+    - For non-doubles: find and mark the first slot matching the played die
 
-    def _update_for_diff_dice(die: Array, idx: Array, playable_dice: Array):
-        return (die == playable_dice[idx]) * -1 + (die != playable_dice[idx]) * playable_dice[idx]
+    Refactor #7: Simplified non-doubles case using jnp.where instead of vmap+tile.
+    """
+    played_die = action % 6
+    is_doubles = dice[0] == dice[1]
 
-    return (dice[0] == dice[1]) * playable_dice.at[3 - _n].set(-1) + (dice[0] != dice[1]) * jax.vmap(
-        _update_for_diff_dice
-    )(die_array, dice_indices, jnp.tile(playable_dice, (4, 1))).astype(jnp.int32)
+    # For doubles: mark the next slot as used (slots filled from index 3 down to 0)
+    doubles_result = playable_dice.at[3 - played_dice_num].set(-1)
+
+    # For non-doubles: mark the first matching die as used
+    # playable_dice is [die1, die2, -1, -1] for non-doubles
+    # We need to set the first slot matching played_die to -1
+    matches = playable_dice == played_die
+    # Find first match index (0 or 1 for non-doubles)
+    first_match_idx = jnp.argmax(matches)
+    non_doubles_result = playable_dice.at[first_match_idx].set(-1)
+
+    return jnp.where(is_doubles, doubles_result, non_doubles_result)
 
 
 def _home_board() -> Array:
@@ -756,17 +779,19 @@ def _legal_action_mask_for_single_die(board: Array, die) -> Array:
 def _legal_action_mask_for_valid_single_dice(board: Array, die) -> Array:
     """
     Legal action mask for a single die when the die is valid.
+
+    Refactor #5: Direct scatter instead of creating 26 full masks.
+    Previously created (26, 156) intermediate array, now creates (26,) + scatter.
     """
-    src_indices = jnp.arange(26, dtype=jnp.int32)  # calc legal action for all src indices
+    src_indices = jnp.arange(26, dtype=jnp.int32)
+    actions = src_indices * 6 + die
 
-    def _is_legal(idx: Array):
-        action = idx * 6 + die
-        legal_action_mask = jnp.zeros(26 * 6, dtype=jnp.bool_)
-        legal_action_mask = legal_action_mask.at[action].set(_is_action_legal(board, action))
-        return legal_action_mask
+    # Check legality for all 26 actions at once - Shape: (26,)
+    is_legal = jax.vmap(_is_action_legal, in_axes=(None, 0))(board, actions)
 
-    legal_action_mask = jax.vmap(_is_legal)(src_indices).any(axis=0)  # (26 * 6)
-    return legal_action_mask
+    # Scatter results directly into 156-element mask
+    mask = jnp.zeros(26 * 6, dtype=jnp.bool_)
+    return mask.at[actions].set(is_legal)
 
 
 def _get_abs_board(state: State) -> Array:
