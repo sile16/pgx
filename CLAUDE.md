@@ -43,6 +43,13 @@ We are refactoring the PGX Backgammon implementation and tracking performance ch
 - Detect regressions early
 - Find optimal batch sizes for GPU utilization
 
+## GNU Backgammon Parity Check
+
+- Harness: `scripts/pgx_gnubg_compare.py` drives pgx vs GNU Backgammon in parallel, comparing end-state sets each turn (cube disabled, no money play). Logs diffs to `logs/pgx_gnubg_diff.log`.
+- Bridging helpers: `tools/gnubg_bridge.py` normalizes board formats, enumerates pgx moves, and maps GNU sequences (including explicit no-op when neither side can move).
+- Latest run: `venv-pgx/bin/python scripts/pgx_gnubg_compare.py --games 10 --seed 1 --max-turns 500` covering matchups `rand_rand`, `rand_gnubg`, `gnubg_gnubg` with per-game seeds (`seed + game_index`).
+- Result: 0 discrepancies; zero-move turns now align because GNU no-legal-move is mapped to a no-op, matching pgx behavior.
+
 ### Benchmark Location
 - `benchmarks/benchmark_backgammon.py` - The benchmark script
 - `benchmarks/benchmark_results.json` - Historical results log (per commit)
