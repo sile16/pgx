@@ -181,7 +181,7 @@ class Backgammon(core.Env):
 
     @property
     def version(self) -> str:
-        return "v2.1"
+        return "v2.2"
 
     @property
     def num_players(self) -> int:
@@ -236,8 +236,198 @@ def _observe(state: State) -> Array:
     playable_dice_count_vec: Array = _to_playable_dice_count(
         state._playable_dice
     )  # 6 dim vec which represents the count of playable die.
-    
+
     return jnp.concatenate((board, playable_dice_count_vec), axis=None)
+
+
+# ==============================================================================
+# Heuristic Observation Functions
+# ==============================================================================
+# Constants for pip count scaling
+_MAX_PIP_COUNT = 375  # 15 checkers × 25 max distance (all on bar)
+
+
+def _is_race(board: Array) -> Array:
+    """
+    Determines if the game is in a race state (no contact possible).
+
+    A race occurs when all current player's checkers (positive) have passed
+    all opponent's checkers (negative), meaning no hitting is possible.
+
+    Returns:
+        1 if race (no contact), 0 if contact possible
+    """
+    # Check if either player has checkers on bar - if so, not a race
+    black_on_bar = board[24] > 0
+    white_on_bar = board[25] < 0
+    has_bar_checker = black_on_bar | white_on_bar
+
+    # Find the minimum index where black has checkers (furthest back)
+    # Use a large value (100) if no checkers exist at that position
+    black_positions = jnp.where(board[:24] > 0, jnp.arange(24), 100)
+    black_min_idx = jnp.min(black_positions)
+
+    # Find the maximum index where white has checkers (furthest forward from black's view)
+    # Use -1 if no checkers exist at that position
+    white_positions = jnp.where(board[:24] < 0, jnp.arange(24), -1)
+    white_max_idx = jnp.max(white_positions)
+
+    # It's a race if black's furthest back checker is ahead of white's furthest forward
+    # AND no one has checkers on the bar
+    is_race = (black_min_idx > white_max_idx) & (~has_bar_checker)
+
+    return is_race.astype(jnp.int32)
+
+
+def _can_bear_off_current(board: Array) -> Array:
+    """
+    Check if current player (black/positive) can bear off.
+
+    A player can bear off when all their checkers are on their home board
+    (indices 18-23 for black) or have been borne off (index 26).
+
+    Returns:
+        1 if can bear off, 0 otherwise
+    """
+    # Use the existing _is_all_on_home_board function
+    return _is_all_on_home_board(board).astype(jnp.int32)
+
+
+def _can_bear_off_opponent(board: Array) -> Array:
+    """
+    Check if opponent (white/negative) can bear off.
+
+    White can bear off when all their checkers are on their home board
+    (indices 0-5 from black's perspective) or have been borne off (index 27).
+
+    Returns:
+        1 if opponent can bear off, 0 otherwise
+    """
+    # White's home board is indices 0-5
+    # Count white checkers on home board (negative values at 0-5)
+    white_home_board = board[:6]
+    on_home_board = jnp.sum(jnp.minimum(jnp.maximum(-white_home_board, 0), 15))
+
+    # Count white checkers borne off (negative at index 27, stored as negative)
+    white_off = -board[27]
+
+    # White has 15 checkers total
+    # Can bear off if all remaining checkers (15 - off) are on home board
+    total_remaining = 15 - white_off
+    can_bear_off = (total_remaining == on_home_board)
+
+    # Also check white has no checkers on bar
+    white_on_bar = board[25] < 0
+
+    return (can_bear_off & (~white_on_bar)).astype(jnp.int32)
+
+
+def _pip_count_current(board: Array) -> Array:
+    """
+    Calculate pip count for current player (black/positive).
+
+    Pip count = sum of (distance to bear off) for each checker.
+    - For checkers at index i (0-23): distance = 24 - i
+    - For checkers on bar (index 24): distance = 25
+
+    Returns:
+        Total pip count for current player
+    """
+    # Pip distances for board positions 0-23
+    distances = 24 - jnp.arange(24, dtype=jnp.int32)
+
+    # Count only positive values (black checkers)
+    black_counts = jnp.maximum(board[:24], 0)
+    board_pips = jnp.sum(black_counts * distances)
+
+    # Add bar checkers (distance = 25)
+    bar_pips = jnp.maximum(board[24], 0) * 25
+
+    return board_pips + bar_pips
+
+
+def _pip_count_opponent(board: Array) -> Array:
+    """
+    Calculate pip count for opponent (white/negative).
+
+    Pip count = sum of (distance to bear off) for each checker.
+    White moves from high indices to low, bearing off at index -1 (conceptually).
+    - For checkers at index i (0-23): distance = i + 1
+    - For checkers on bar (index 25): distance = 25
+
+    Returns:
+        Total pip count for opponent
+    """
+    # Pip distances for white: index + 1 (white moves toward index 0)
+    distances = jnp.arange(24, dtype=jnp.int32) + 1
+
+    # Count only negative values (white checkers), take absolute value
+    white_counts = jnp.maximum(-board[:24], 0)
+    board_pips = jnp.sum(white_counts * distances)
+
+    # Add bar checkers (distance = 25)
+    bar_pips = jnp.maximum(-board[25], 0) * 25
+
+    return board_pips + bar_pips
+
+
+def _pip_count_differential_scaled(board: Array) -> Array:
+    """
+    Calculate scaled pip count differential.
+
+    Positive value = current player (black) is ahead (lower pip count).
+    Negative value = opponent (white) is ahead.
+
+    Scaled to [-1, 1] range by dividing by max possible pip count (375).
+
+    Returns:
+        Scaled pip differential in range [-1, 1]
+    """
+    current_pips = _pip_count_current(board)
+    opponent_pips = _pip_count_opponent(board)
+
+    # Positive differential = current player is ahead (fewer pips)
+    differential = opponent_pips - current_pips
+
+    # Scale to [-1, 1]
+    return differential.astype(jnp.float32) / _MAX_PIP_COUNT
+
+
+def _observe_with_heuristics(state: State) -> Array:
+    """
+    Return observation for current player with additional heuristic features.
+
+    Observation structure (38 elements):
+    - [0:28]  Board state (28 elements)
+    - [28:34] Playable dice count (6 elements)
+    - [34]    Race flag (1 = race, 0 = contact possible)
+    - [35]    Current player can bear off (1 = yes, 0 = no)
+    - [36]    Opponent can bear off (1 = yes, 0 = no)
+    - [37]    Scaled pip count differential (positive = current ahead)
+
+    Returns:
+        38-element observation array
+    """
+    board: Array = state._board
+
+    # Basic observation components
+    playable_dice_count_vec: Array = _to_playable_dice_count(state._playable_dice)
+
+    # Heuristic features
+    race_flag = _is_race(board)
+    bear_off_current = _can_bear_off_current(board)
+    bear_off_opponent = _can_bear_off_opponent(board)
+    pip_differential = _pip_count_differential_scaled(board)
+
+    # Concatenate all features
+    return jnp.concatenate([
+        board,                                    # 28 elements
+        playable_dice_count_vec,                  # 6 elements
+        jnp.array([race_flag], dtype=jnp.float32),          # 1 element
+        jnp.array([bear_off_current], dtype=jnp.float32),   # 1 element
+        jnp.array([bear_off_opponent], dtype=jnp.float32),  # 1 element
+        jnp.array([pip_differential], dtype=jnp.float32),   # 1 element
+    ])
 
 
 def _to_playable_dice_count(playable_dice: Array) -> Array:

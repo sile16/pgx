@@ -28,6 +28,14 @@ from pgx.backgammon import (
     _legal_action_mask_for_valid_single_dice,
     _to_playable_dice_count,
     _update_playable_dice,
+    # New heuristic observation functions
+    _is_race,
+    _can_bear_off_current,
+    _can_bear_off_opponent,
+    _pip_count_current,
+    _pip_count_opponent,
+    _pip_count_differential_scaled,
+    _observe_with_heuristics,
 )
 import os
 from pgx._src.api_test import (
@@ -1075,3 +1083,326 @@ def test_update_playable_dice():
     assert jnp.array_equal(result_d3, expected_d3), f"Doubles (n=3) failed: {result_d3} != {expected_d3}"
 
     print("All _update_playable_dice tests passed!")
+
+
+# ==============================================================================
+# == HEURISTIC OBSERVATION TESTS ===============================================
+# ==============================================================================
+
+def test_is_race():
+    """
+    Tests the _is_race function that determines if the game is in a race state
+    (no contact possible - all current player checkers have passed opponent checkers).
+    """
+    from pgx.backgammon import _is_race
+
+    # Test 1: Starting position is NOT a race (contact possible)
+    board_start = jnp.array([2, 0, 0, 0, 0, -5, 0, -3, 0, 0, 0, 5, -5, 0, 0, 0, 3, 0, 5, 0, 0, 0, 0, -2, 0, 0, 0, 0], dtype=jnp.int32)
+    assert _is_race(board_start) == 0, "Starting position should not be a race"
+
+    # Test 2: Pure race - black checkers all ahead of white
+    # Black at 20-23, White at 0-5 (already passed each other)
+    board_race = jnp.zeros(28, dtype=jnp.int32)
+    board_race = board_race.at[20].set(5)  # Black at point 21
+    board_race = board_race.at[21].set(5)  # Black at point 22
+    board_race = board_race.at[22].set(5)  # Black at point 23
+    board_race = board_race.at[0].set(-5)  # White at point 1
+    board_race = board_race.at[1].set(-5)  # White at point 2
+    board_race = board_race.at[2].set(-5)  # White at point 3
+    assert _is_race(board_race) == 1, "Should be a race - all checkers have passed"
+
+    # Test 3: Not a race - one black behind one white
+    board_contact = jnp.zeros(28, dtype=jnp.int32)
+    board_contact = board_contact.at[10].set(1)  # Black at point 11
+    board_contact = board_contact.at[20].set(14)  # Rest of black ahead
+    board_contact = board_contact.at[15].set(-15)  # White at point 16 (ahead of black at 11)
+    assert _is_race(board_contact) == 0, "Not a race - black at 10 can still hit white at 15"
+
+    # Test 4: Not a race - black has checker on bar
+    board_bar_black = jnp.zeros(28, dtype=jnp.int32)
+    board_bar_black = board_bar_black.at[24].set(1)  # Black on bar
+    board_bar_black = board_bar_black.at[22].set(14)  # Rest of black
+    board_bar_black = board_bar_black.at[0].set(-15)  # White far behind
+    assert _is_race(board_bar_black) == 0, "Not a race - black has checker on bar"
+
+    # Test 5: Not a race - white has checker on bar
+    board_bar_white = jnp.zeros(28, dtype=jnp.int32)
+    board_bar_white = board_bar_white.at[22].set(15)  # Black all on home
+    board_bar_white = board_bar_white.at[25].set(-1)  # White on bar
+    board_bar_white = board_bar_white.at[0].set(-14)  # Rest of white
+    assert _is_race(board_bar_white) == 0, "Not a race - white has checker on bar"
+
+    # Test 6: Race - all checkers borne off for both except home boards
+    board_bearing = jnp.zeros(28, dtype=jnp.int32)
+    board_bearing = board_bearing.at[23].set(10)  # Black at point 24
+    board_bearing = board_bearing.at[26].set(5)   # Black off
+    board_bearing = board_bearing.at[0].set(-10)  # White at point 1
+    board_bearing = board_bearing.at[27].set(-5)  # White off
+    assert _is_race(board_bearing) == 1, "Should be a race - both in home areas"
+
+    print("All _is_race tests passed!")
+
+
+def test_can_bear_off():
+    """
+    Tests the bear off detection for current and opponent players.
+    """
+    from pgx.backgammon import _can_bear_off_current, _can_bear_off_opponent
+
+    # Test 1: Starting position - neither can bear off
+    board_start = jnp.array([2, 0, 0, 0, 0, -5, 0, -3, 0, 0, 0, 5, -5, 0, 0, 0, 3, 0, 5, 0, 0, 0, 0, -2, 0, 0, 0, 0], dtype=jnp.int32)
+    assert _can_bear_off_current(board_start) == 0, "Black cannot bear off at start"
+    assert _can_bear_off_opponent(board_start) == 0, "White cannot bear off at start"
+
+    # Test 2: Black can bear off (all on home board 18-23)
+    board_black_home = jnp.zeros(28, dtype=jnp.int32)
+    board_black_home = board_black_home.at[18].set(5)
+    board_black_home = board_black_home.at[19].set(5)
+    board_black_home = board_black_home.at[20].set(5)
+    board_black_home = board_black_home.at[12].set(-15)  # White at midpoint (not in their home)
+    assert _can_bear_off_current(board_black_home) == 1, "Black should be able to bear off"
+    assert _can_bear_off_opponent(board_black_home) == 0, "White cannot bear off"
+
+    # Test 3: White can bear off (all on white's home board 0-5)
+    board_white_home = jnp.zeros(28, dtype=jnp.int32)
+    board_white_home = board_white_home.at[12].set(15)  # Black at midpoint (not in their home)
+    board_white_home = board_white_home.at[0].set(-5)
+    board_white_home = board_white_home.at[1].set(-5)
+    board_white_home = board_white_home.at[2].set(-5)
+    assert _can_bear_off_current(board_white_home) == 0, "Black cannot bear off"
+    assert _can_bear_off_opponent(board_white_home) == 1, "White should be able to bear off"
+
+    # Test 4: Both can bear off
+    board_both = jnp.zeros(28, dtype=jnp.int32)
+    board_both = board_both.at[20].set(15)  # Black all in home
+    board_both = board_both.at[2].set(-15)   # White all in their home
+    assert _can_bear_off_current(board_both) == 1, "Black should be able to bear off"
+    assert _can_bear_off_opponent(board_both) == 1, "White should be able to bear off"
+
+    # Test 5: Black has some off already
+    board_partial = jnp.zeros(28, dtype=jnp.int32)
+    board_partial = board_partial.at[22].set(10)  # 10 on home board
+    board_partial = board_partial.at[26].set(5)   # 5 borne off
+    board_partial = board_partial.at[0].set(-15)
+    assert _can_bear_off_current(board_partial) == 1, "Black can bear off with some already off"
+
+    # Test 6: Black has checker on bar - cannot bear off
+    board_bar = jnp.zeros(28, dtype=jnp.int32)
+    board_bar = board_bar.at[22].set(14)
+    board_bar = board_bar.at[24].set(1)  # One on bar
+    board_bar = board_bar.at[0].set(-15)
+    assert _can_bear_off_current(board_bar) == 0, "Black cannot bear off with checker on bar"
+
+    print("All _can_bear_off tests passed!")
+
+
+def test_pip_count():
+    """
+    Tests the pip count calculation for current and opponent players.
+    Pip count = sum of (distance to bear off) for each checker.
+    """
+    from pgx.backgammon import _pip_count_current, _pip_count_opponent
+
+    # Test 1: Simple case - one checker
+    board1 = jnp.zeros(28, dtype=jnp.int32)
+    board1 = board1.at[0].set(1)  # Black at point 1 (index 0), distance = 24
+    board1 = board1.at[26].set(14)  # Rest off
+    board1 = board1.at[27].set(-15)  # White all off
+    assert _pip_count_current(board1) == 24, f"Expected 24, got {_pip_count_current(board1)}"
+
+    # Test 2: Checker at point 24 (index 23), distance = 1
+    board2 = jnp.zeros(28, dtype=jnp.int32)
+    board2 = board2.at[23].set(1)  # Black at point 24, distance = 1
+    board2 = board2.at[26].set(14)
+    board2 = board2.at[27].set(-15)
+    assert _pip_count_current(board2) == 1, f"Expected 1, got {_pip_count_current(board2)}"
+
+    # Test 3: Checker on bar, distance = 25
+    board3 = jnp.zeros(28, dtype=jnp.int32)
+    board3 = board3.at[24].set(1)  # Black on bar, distance = 25
+    board3 = board3.at[26].set(14)
+    board3 = board3.at[27].set(-15)
+    assert _pip_count_current(board3) == 25, f"Expected 25, got {_pip_count_current(board3)}"
+
+    # Test 4: Multiple checkers
+    board4 = jnp.zeros(28, dtype=jnp.int32)
+    board4 = board4.at[0].set(2)   # 2 checkers × 24 = 48
+    board4 = board4.at[23].set(3)  # 3 checkers × 1 = 3
+    board4 = board4.at[26].set(10)
+    board4 = board4.at[27].set(-15)
+    assert _pip_count_current(board4) == 51, f"Expected 51, got {_pip_count_current(board4)}"
+
+    # Test 5: Opponent pip count (white moves from high to low indices)
+    # White at index 23 (point 24), distance for white = 24
+    board5 = jnp.zeros(28, dtype=jnp.int32)
+    board5 = board5.at[26].set(15)  # Black all off
+    board5 = board5.at[23].set(-1)  # White at point 24, distance = 24
+    board5 = board5.at[27].set(-14)
+    assert _pip_count_opponent(board5) == 24, f"Expected 24, got {_pip_count_opponent(board5)}"
+
+    # Test 6: White at index 0 (point 1), distance for white = 1
+    board6 = jnp.zeros(28, dtype=jnp.int32)
+    board6 = board6.at[26].set(15)
+    board6 = board6.at[0].set(-1)  # White at point 1, distance = 1
+    board6 = board6.at[27].set(-14)
+    assert _pip_count_opponent(board6) == 1, f"Expected 1, got {_pip_count_opponent(board6)}"
+
+    # Test 7: White on bar, distance = 25
+    board7 = jnp.zeros(28, dtype=jnp.int32)
+    board7 = board7.at[26].set(15)
+    board7 = board7.at[25].set(-1)  # White on bar, distance = 25
+    board7 = board7.at[27].set(-14)
+    assert _pip_count_opponent(board7) == 25, f"Expected 25, got {_pip_count_opponent(board7)}"
+
+    # Test 8: Starting position pip count
+    board_start = jnp.array([2, 0, 0, 0, 0, -5, 0, -3, 0, 0, 0, 5, -5, 0, 0, 0, 3, 0, 5, 0, 0, 0, 0, -2, 0, 0, 0, 0], dtype=jnp.int32)
+    # Black: 2×24 + 5×13 + 3×8 + 5×6 = 48 + 65 + 24 + 30 = 167
+    expected_black = 2*24 + 5*13 + 3*8 + 5*6
+    assert _pip_count_current(board_start) == expected_black, f"Expected {expected_black}, got {_pip_count_current(board_start)}"
+    # White: 5×19 + 3×17 + 5×12 + 2×1 = 95 + 51 + 60 + 2 = 208
+    # Wait, white moves in opposite direction: distance = index + 1
+    # White at 5: distance = 6, White at 7: distance = 8, White at 12: distance = 13, White at 23: distance = 24
+    expected_white = 5*6 + 3*8 + 5*13 + 2*24
+    assert _pip_count_opponent(board_start) == expected_white, f"Expected {expected_white}, got {_pip_count_opponent(board_start)}"
+
+    print("All _pip_count tests passed!")
+
+
+def test_pip_count_differential():
+    """
+    Tests the scaled pip count differential.
+    Positive = current player is ahead (lower pip count).
+    """
+    from pgx.backgammon import _pip_count_differential_scaled
+
+    # Test 1: Equal pip counts should give 0
+    board_equal = jnp.zeros(28, dtype=jnp.int32)
+    board_equal = board_equal.at[12].set(15)   # Black all at midpoint, distance = 12 each = 180
+    board_equal = board_equal.at[11].set(-15)  # White at 12 (distance = 12 each) = 180
+    diff = _pip_count_differential_scaled(board_equal)
+    assert jnp.abs(diff) < 0.01, f"Expected ~0, got {diff}"
+
+    # Test 2: Black ahead (lower pip count)
+    board_black_ahead = jnp.zeros(28, dtype=jnp.int32)
+    board_black_ahead = board_black_ahead.at[23].set(15)  # Black at 24, distance = 1 each = 15
+    board_black_ahead = board_black_ahead.at[0].set(-15)  # White at 1, distance = 1 each = 15
+    # Both have pip count 15, but directions are different
+    # Black: 15 × 1 = 15
+    # White: 15 × 1 = 15
+    # Differential should be 0
+    diff2 = _pip_count_differential_scaled(board_black_ahead)
+    assert jnp.abs(diff2) < 0.01, f"Expected ~0, got {diff2}"
+
+    # Test 3: Black has big lead
+    board_black_winning = jnp.zeros(28, dtype=jnp.int32)
+    board_black_winning = board_black_winning.at[26].set(15)  # Black all off, pip = 0
+    board_black_winning = board_black_winning.at[0].set(-15)  # White at 1, pip = 15
+    diff3 = _pip_count_differential_scaled(board_black_winning)
+    # Differential = opponent_pips - current_pips = 15 - 0 = 15
+    # Scaled = 15 / 375 = 0.04
+    assert diff3 > 0, f"Expected positive (black ahead), got {diff3}"
+
+    # Test 4: White has big lead (from black's perspective)
+    board_white_winning = jnp.zeros(28, dtype=jnp.int32)
+    board_white_winning = board_white_winning.at[0].set(15)  # Black at 1, pip = 15*24 = 360
+    board_white_winning = board_white_winning.at[27].set(-15)  # White all off, pip = 0
+    diff4 = _pip_count_differential_scaled(board_white_winning)
+    # Differential = 0 - 360 = -360
+    # Scaled = -360 / 375 = -0.96
+    assert diff4 < 0, f"Expected negative (white ahead), got {diff4}"
+
+    # Test 5: Check scaling bounds
+    # Max current pip = 15 × 25 (all on bar) = 375
+    board_max_curr = jnp.zeros(28, dtype=jnp.int32)
+    board_max_curr = board_max_curr.at[24].set(15)  # Black all on bar
+    board_max_curr = board_max_curr.at[27].set(-15)  # White all off
+    diff_max_neg = _pip_count_differential_scaled(board_max_curr)
+    assert diff_max_neg >= -1.0, f"Should be >= -1.0, got {diff_max_neg}"
+
+    board_max_opp = jnp.zeros(28, dtype=jnp.int32)
+    board_max_opp = board_max_opp.at[26].set(15)   # Black all off
+    board_max_opp = board_max_opp.at[25].set(-15)  # White all on bar
+    diff_max_pos = _pip_count_differential_scaled(board_max_opp)
+    assert diff_max_pos <= 1.0, f"Should be <= 1.0, got {diff_max_pos}"
+
+    print("All _pip_count_differential_scaled tests passed!")
+
+
+def test_observe_with_heuristics():
+    """
+    Tests the full _observe_with_heuristics function that returns
+    the complete observation including board, dice, and heuristics.
+    """
+    from pgx.backgammon import _observe_with_heuristics
+
+    # Test with starting position
+    board_start = jnp.array([2, 0, 0, 0, 0, -5, 0, -3, 0, 0, 0, 5, -5, 0, 0, 0, 3, 0, 5, 0, 0, 0, 0, -2, 0, 0, 0, 0], dtype=jnp.int32)
+    playable_dice = jnp.array([2, 3, -1, -1], dtype=jnp.int32)  # 3-4 roll
+
+    state = make_test_state(
+        current_player=jnp.int32(0),
+        board=board_start,
+        turn=jnp.int32(0),
+        dice=jnp.array([2, 3], dtype=jnp.int32),
+        playable_dice=playable_dice,
+        played_dice_num=jnp.int32(0),
+    )
+
+    obs = _observe_with_heuristics(state)
+
+    # Check observation shape: 28 (board) + 6 (dice) + 4 (heuristics) = 38
+    assert obs.shape == (38,), f"Expected shape (38,), got {obs.shape}"
+
+    # Check board portion (first 28 elements)
+    assert jnp.array_equal(obs[:28], board_start), "Board portion should match"
+
+    # Check dice portion (elements 28-33)
+    expected_dice = jnp.array([0, 0, 1, 1, 0, 0], dtype=jnp.int32)  # 3 and 4
+    assert jnp.array_equal(obs[28:34], expected_dice), f"Dice portion mismatch: {obs[28:34]} vs {expected_dice}"
+
+    # Check heuristics portion (elements 34-37)
+    # contact flag should be 0 (not a race, contact possible)
+    assert obs[34] == 0, f"Contact flag should be 0, got {obs[34]}"
+    # current player bear off should be 0
+    assert obs[35] == 0, f"Current bear off should be 0, got {obs[35]}"
+    # opponent bear off should be 0
+    assert obs[36] == 0, f"Opponent bear off should be 0, got {obs[36]}"
+    # pip differential - starting position should be close to 0
+    # (both have 167 pips)
+    assert jnp.abs(obs[37]) < 0.1, f"Pip differential should be ~0, got {obs[37]}"
+
+    print("All _observe_with_heuristics tests passed!")
+
+
+def test_observe_with_heuristics_race_position():
+    """
+    Tests observation in a race position where both sides have passed each other.
+    """
+    from pgx.backgammon import _observe_with_heuristics
+
+    # Create a race position
+    board_race = jnp.zeros(28, dtype=jnp.int32)
+    board_race = board_race.at[20].set(10)  # Black on home board
+    board_race = board_race.at[22].set(5)
+    board_race = board_race.at[2].set(-10)  # White on their home board
+    board_race = board_race.at[4].set(-5)
+
+    state = make_test_state(
+        current_player=jnp.int32(0),
+        board=board_race,
+        turn=jnp.int32(0),
+        dice=jnp.array([0, 1], dtype=jnp.int32),
+        playable_dice=jnp.array([0, 1, -1, -1], dtype=jnp.int32),
+        played_dice_num=jnp.int32(0),
+    )
+
+    obs = _observe_with_heuristics(state)
+
+    # contact flag should be 1 (is a race)
+    assert obs[34] == 1, f"Contact flag should be 1 (race), got {obs[34]}"
+    # current player bear off should be 1 (black all on home board)
+    assert obs[35] == 1, f"Current bear off should be 1, got {obs[35]}"
+    # opponent bear off should be 1 (white all on their home board)
+    assert obs[36] == 1, f"Opponent bear off should be 1, got {obs[36]}"
+
+    print("All race position observation tests passed!")
