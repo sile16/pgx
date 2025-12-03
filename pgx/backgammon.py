@@ -439,10 +439,11 @@ def _blot_board(board: Array) -> Array:
     Returns:
         24-element array: +1 for current player blot, -1 for opponent blot, 0 otherwise
     """
-    points = board[:24]
-    current_blots = (points == 1).astype(jnp.float32)
-    opponent_blots = (points == -1).astype(jnp.float32) * -1
-    return current_blots + opponent_blots
+    points = board[:24].astype(jnp.float32)
+    abs_points = jnp.abs(points)
+    sign = jnp.sign(points)
+    # Blot when exactly 1 checker, sign gives direction
+    return (abs_points == 1).astype(jnp.float32) * sign
 
 
 def _blocker_board(board: Array) -> Array:
@@ -457,14 +458,13 @@ def _blocker_board(board: Array) -> Array:
         - -0.5 for 2 checkers, -1 for 3+ checkers (opponent)
         - 0 otherwise
     """
-    points = board[:24]
-    # Current player blockers
-    curr_2 = (points == 2).astype(jnp.float32) * 0.5
-    curr_3plus = (points >= 3).astype(jnp.float32)
-    # Opponent blockers
-    opp_2 = (points == -2).astype(jnp.float32) * -0.5
-    opp_3plus = (points <= -3).astype(jnp.float32) * -1.0
-    return curr_2 + curr_3plus + opp_2 + opp_3plus
+    points = board[:24].astype(jnp.float32)
+    abs_points = jnp.abs(points)
+    sign = jnp.sign(points)
+    # 2 comparisons instead of 4: use abs and sign
+    is_2 = (abs_points == 2).astype(jnp.float32)
+    is_3plus = (abs_points >= 3).astype(jnp.float32)
+    return sign * (is_2 * 0.5 + is_3plus)
 
 
 def _observe_full(state: State) -> Array:
@@ -487,34 +487,34 @@ def _observe_full(state: State) -> Array:
         86-element observation array with all values in [-1, 1]
     """
     board = state._board
+    board_f = board.astype(jnp.float32)
+    points = board_f[:24]
+
+    # Pre-compute shared values for blot/blocker (optimization)
+    abs_points = jnp.abs(points)
+    sign = jnp.sign(points)
 
     # Scaled board (28 elements) - divide by 15
-    scaled_board = board.astype(jnp.float32) / 15.0
+    scaled_board = board_f / 15.0
 
     # Scaled dice (6 elements) - divide by 4
     dice_counts = _to_playable_dice_count(state._playable_dice)
     scaled_dice = dice_counts.astype(jnp.float32) / 4.0
 
-    # Heuristics (4 elements) - already in [0,1] or [-1,1]
-    race_flag = _is_race(board).astype(jnp.float32)
-    bear_off_current = _can_bear_off_current(board).astype(jnp.float32)
-    bear_off_opponent = _can_bear_off_opponent(board).astype(jnp.float32)
-    pip_diff = _pip_count_differential_scaled(board)
-
-    # Blot/Blocker features (48 elements)
-    blots = _blot_board(board)
-    blockers = _blocker_board(board)
-
-    return jnp.concatenate([
-        scaled_board,                    # [0:28]
-        scaled_dice,                     # [28:34]
-        jnp.array([race_flag]),          # [34]
-        jnp.array([bear_off_current]),   # [35]
-        jnp.array([bear_off_opponent]),  # [36]
-        jnp.array([pip_diff]),           # [37]
-        blots,                           # [38:62]
-        blockers,                        # [62:86]
+    # Heuristics as single array (4 elements) - reduces concatenations
+    heuristics = jnp.array([
+        _is_race(board).astype(jnp.float32),
+        _can_bear_off_current(board).astype(jnp.float32),
+        _can_bear_off_opponent(board).astype(jnp.float32),
+        _pip_count_differential_scaled(board),
     ])
+
+    # Inline blot/blocker using pre-computed abs/sign (48 elements)
+    blots = (abs_points == 1).astype(jnp.float32) * sign
+    blockers = sign * ((abs_points == 2).astype(jnp.float32) * 0.5 + (abs_points >= 3).astype(jnp.float32))
+
+    # 5 concatenations instead of 8
+    return jnp.concatenate([scaled_board, scaled_dice, heuristics, blots, blockers])
 
 
 def _to_playable_dice_count(playable_dice: Array) -> Array:
