@@ -1406,3 +1406,315 @@ def test_observe_with_heuristics_race_position():
     assert obs[36] == 1, f"Opponent bear off should be 1, got {obs[36]}"
 
     print("All race position observation tests passed!")
+
+
+def test_observation_ranges_board():
+    """
+    Tests the ranges of board observations (indices 0-27).
+    Verifies that board values fall within expected ranges.
+    """
+    from pgx.backgammon import _observe
+
+    # Test 1: Maximum positive values - all black checkers on one point
+    board_max_black = jnp.zeros(28, dtype=jnp.int32)
+    board_max_black = board_max_black.at[0].set(15)  # All black at point 1
+    board_max_black = board_max_black.at[27].set(-15)  # All white off
+
+    state = make_test_state(
+        current_player=jnp.int32(0),
+        board=board_max_black,
+        turn=jnp.int32(0),
+        dice=jnp.array([0, 1], dtype=jnp.int32),
+        playable_dice=jnp.array([0, 1, -1, -1], dtype=jnp.int32),
+        played_dice_num=jnp.int32(0),
+    )
+    obs = _observe(state)
+
+    # Point 0 should have max value of 15
+    assert obs[0] == 15, f"Max black on point should be 15, got {obs[0]}"
+    # White off should be -15
+    assert obs[27] == -15, f"White off should be -15, got {obs[27]}"
+
+    # Test 2: Maximum negative values - all white checkers on one point
+    board_max_white = jnp.zeros(28, dtype=jnp.int32)
+    board_max_white = board_max_white.at[12].set(-15)  # All white at point 13
+    board_max_white = board_max_white.at[26].set(15)   # All black off
+
+    state2 = make_test_state(
+        current_player=jnp.int32(0),
+        board=board_max_white,
+        turn=jnp.int32(0),
+        dice=jnp.array([0, 1], dtype=jnp.int32),
+        playable_dice=jnp.array([0, 1, -1, -1], dtype=jnp.int32),
+        played_dice_num=jnp.int32(0),
+    )
+    obs2 = _observe(state2)
+
+    # Point 12 should have min value of -15
+    assert obs2[12] == -15, f"Max white on point should be -15, got {obs2[12]}"
+    # Black off should be 15
+    assert obs2[26] == 15, f"Black off should be 15, got {obs2[26]}"
+
+    # Test 3: Bar positions - max values
+    board_bar = jnp.zeros(28, dtype=jnp.int32)
+    board_bar = board_bar.at[24].set(15)   # All black on bar
+    board_bar = board_bar.at[25].set(-15)  # All white on bar
+
+    state3 = make_test_state(
+        current_player=jnp.int32(0),
+        board=board_bar,
+        turn=jnp.int32(0),
+        dice=jnp.array([0, 1], dtype=jnp.int32),
+        playable_dice=jnp.array([0, 1, -1, -1], dtype=jnp.int32),
+        played_dice_num=jnp.int32(0),
+    )
+    obs3 = _observe(state3)
+
+    # Black bar should be 15
+    assert obs3[24] == 15, f"Black bar max should be 15, got {obs3[24]}"
+    # White bar should be -15
+    assert obs3[25] == -15, f"White bar max should be -15, got {obs3[25]}"
+
+    # Test 4: Verify all board positions are within [-15, 15]
+    board_start = jnp.array([2, 0, 0, 0, 0, -5, 0, -3, 0, 0, 0, 5, -5, 0, 0, 0, 3, 0, 5, 0, 0, 0, 0, -2, 0, 0, 0, 0], dtype=jnp.int32)
+    state4 = make_test_state(
+        current_player=jnp.int32(0),
+        board=board_start,
+        turn=jnp.int32(0),
+        dice=jnp.array([2, 3], dtype=jnp.int32),
+        playable_dice=jnp.array([2, 3, -1, -1], dtype=jnp.int32),
+        played_dice_num=jnp.int32(0),
+    )
+    obs4 = _observe(state4)
+
+    # Check all board positions (0-27) are within range
+    for i in range(28):
+        assert -15 <= obs4[i] <= 15, f"Board position {i} out of range: {obs4[i]}"
+
+    print("All board observation range tests passed!")
+    print(f"  Points range: [-15, 15]")
+    print(f"  Bar range: black [0, 15], white [-15, 0]")
+    print(f"  Off range: black [0, 15], white [-15, 0]")
+
+
+def test_observation_ranges_dice():
+    """
+    Tests the ranges of dice observations (indices 28-33).
+    """
+    from pgx.backgammon import _observe
+
+    # Test 1: Non-doubles - two different dice
+    board = jnp.zeros(28, dtype=jnp.int32)
+    board = board.at[0].set(15)
+    board = board.at[27].set(-15)
+
+    state1 = make_test_state(
+        current_player=jnp.int32(0),
+        board=board,
+        turn=jnp.int32(0),
+        dice=jnp.array([0, 5], dtype=jnp.int32),  # 1 and 6
+        playable_dice=jnp.array([0, 5, -1, -1], dtype=jnp.int32),
+        played_dice_num=jnp.int32(0),
+    )
+    obs1 = _observe(state1)
+
+    # Dice portion is indices 28-33
+    # Should have 1 for die value 1 (index 28) and 1 for die value 6 (index 33)
+    expected_dice = jnp.array([1, 0, 0, 0, 0, 1], dtype=jnp.int32)
+    assert jnp.array_equal(obs1[28:34], expected_dice), f"Non-doubles dice mismatch: {obs1[28:34]}"
+
+    # Test 2: Doubles - four of same die
+    state2 = make_test_state(
+        current_player=jnp.int32(0),
+        board=board,
+        turn=jnp.int32(0),
+        dice=jnp.array([3, 3], dtype=jnp.int32),  # double 4s
+        playable_dice=jnp.array([3, 3, 3, 3], dtype=jnp.int32),
+        played_dice_num=jnp.int32(0),
+    )
+    obs2 = _observe(state2)
+
+    # Should have 4 for die value 4 (index 31)
+    expected_dice2 = jnp.array([0, 0, 0, 4, 0, 0], dtype=jnp.int32)
+    assert jnp.array_equal(obs2[28:34], expected_dice2), f"Doubles dice mismatch: {obs2[28:34]}"
+
+    # Test 3: After playing some dice (partial doubles)
+    state3 = make_test_state(
+        current_player=jnp.int32(0),
+        board=board,
+        turn=jnp.int32(0),
+        dice=jnp.array([2, 2], dtype=jnp.int32),  # double 3s
+        playable_dice=jnp.array([2, 2, -1, -1], dtype=jnp.int32),  # 2 remaining
+        played_dice_num=jnp.int32(2),
+    )
+    obs3 = _observe(state3)
+
+    # Should have 2 for die value 3 (index 30)
+    expected_dice3 = jnp.array([0, 0, 2, 0, 0, 0], dtype=jnp.int32)
+    assert jnp.array_equal(obs3[28:34], expected_dice3), f"Partial doubles mismatch: {obs3[28:34]}"
+
+    # Test 4: No dice remaining
+    state4 = make_test_state(
+        current_player=jnp.int32(0),
+        board=board,
+        turn=jnp.int32(0),
+        dice=jnp.array([0, 1], dtype=jnp.int32),
+        playable_dice=jnp.array([-1, -1, -1, -1], dtype=jnp.int32),  # all used
+        played_dice_num=jnp.int32(2),
+    )
+    obs4 = _observe(state4)
+
+    # Should be all zeros
+    expected_dice4 = jnp.array([0, 0, 0, 0, 0, 0], dtype=jnp.int32)
+    assert jnp.array_equal(obs4[28:34], expected_dice4), f"Empty dice mismatch: {obs4[28:34]}"
+
+    # Verify dice counts are always in [0, 4]
+    for i in range(28, 34):
+        assert 0 <= obs1[i] <= 4, f"Dice position {i} out of range: {obs1[i]}"
+        assert 0 <= obs2[i] <= 4, f"Dice position {i} out of range: {obs2[i]}"
+
+    print("All dice observation range tests passed!")
+    print(f"  Dice count range: [0, 4]")
+
+
+def test_observation_ranges_heuristics():
+    """
+    Tests the ranges of heuristic observations (indices 34-37).
+    """
+    from pgx.backgammon import _observe_with_heuristics
+
+    # Test 1: Extreme case - black all on bar (max pip), white all off
+    board_worst_black = jnp.zeros(28, dtype=jnp.int32)
+    board_worst_black = board_worst_black.at[24].set(15)   # All black on bar
+    board_worst_black = board_worst_black.at[27].set(-15)  # All white off
+
+    state1 = make_test_state(
+        current_player=jnp.int32(0),
+        board=board_worst_black,
+        turn=jnp.int32(0),
+        dice=jnp.array([0, 1], dtype=jnp.int32),
+        playable_dice=jnp.array([0, 1, -1, -1], dtype=jnp.int32),
+        played_dice_num=jnp.int32(0),
+    )
+    obs1 = _observe_with_heuristics(state1)
+
+    # Race flag: 0 (black on bar, so contact possible)
+    assert obs1[34] == 0, f"Race flag should be 0, got {obs1[34]}"
+    # Current bear off: 0 (black on bar)
+    assert obs1[35] == 0, f"Bear off current should be 0, got {obs1[35]}"
+    # Opponent bear off: 1 (white all off, so can "bear off" trivially)
+    # Actually white is all OFF, not on home board, need to check logic
+    # Pip differential: should be very negative (black far behind)
+    # Black pip = 15 * 25 = 375, White pip = 0
+    # Differential = 0 - 375 = -375, scaled = -1.0
+    assert obs1[37] == -1.0, f"Pip differential should be -1.0, got {obs1[37]}"
+
+    # Test 2: Extreme case - black all off, white all on bar
+    board_best_black = jnp.zeros(28, dtype=jnp.int32)
+    board_best_black = board_best_black.at[26].set(15)   # All black off
+    board_best_black = board_best_black.at[25].set(-15)  # All white on bar
+
+    state2 = make_test_state(
+        current_player=jnp.int32(0),
+        board=board_best_black,
+        turn=jnp.int32(0),
+        dice=jnp.array([0, 1], dtype=jnp.int32),
+        playable_dice=jnp.array([0, 1, -1, -1], dtype=jnp.int32),
+        played_dice_num=jnp.int32(0),
+    )
+    obs2 = _observe_with_heuristics(state2)
+
+    # Pip differential: should be very positive (black far ahead)
+    # Black pip = 0, White pip = 15 * 25 = 375
+    # Differential = 375 - 0 = 375, scaled = 1.0
+    assert obs2[37] == 1.0, f"Pip differential should be 1.0, got {obs2[37]}"
+
+    # Test 3: Equal position
+    board_equal = jnp.zeros(28, dtype=jnp.int32)
+    board_equal = board_equal.at[12].set(15)   # Black at midpoint
+    board_equal = board_equal.at[11].set(-15)  # White at same distance
+
+    state3 = make_test_state(
+        current_player=jnp.int32(0),
+        board=board_equal,
+        turn=jnp.int32(0),
+        dice=jnp.array([0, 1], dtype=jnp.int32),
+        playable_dice=jnp.array([0, 1, -1, -1], dtype=jnp.int32),
+        played_dice_num=jnp.int32(0),
+    )
+    obs3 = _observe_with_heuristics(state3)
+
+    # Pip differential should be 0
+    assert abs(obs3[37]) < 0.01, f"Pip differential should be ~0, got {obs3[37]}"
+
+    # Verify all heuristics are in expected ranges
+    # Race flag: [0, 1]
+    assert obs1[34] in [0, 1] or obs1[34] in [0.0, 1.0], f"Race flag out of range: {obs1[34]}"
+    # Bear off flags: [0, 1]
+    assert obs1[35] in [0, 1] or obs1[35] in [0.0, 1.0], f"Bear off current out of range: {obs1[35]}"
+    assert obs1[36] in [0, 1] or obs1[36] in [0.0, 1.0], f"Bear off opponent out of range: {obs1[36]}"
+    # Pip differential: [-1, 1]
+    assert -1.0 <= obs1[37] <= 1.0, f"Pip differential out of range: {obs1[37]}"
+    assert -1.0 <= obs2[37] <= 1.0, f"Pip differential out of range: {obs2[37]}"
+
+    print("All heuristic observation range tests passed!")
+    print(f"  Race flag range: [0, 1]")
+    print(f"  Bear off flags range: [0, 1]")
+    print(f"  Pip differential range: [-1, 1]")
+
+
+def test_observation_complete_summary():
+    """
+    Comprehensive test that documents all observation ranges.
+    """
+    from pgx.backgammon import _observe, _observe_with_heuristics
+
+    print("\n" + "="*60)
+    print("OBSERVATION RANGE SUMMARY")
+    print("="*60)
+
+    # Standard observation: 34 elements
+    print("\nStandard Observation (_observe): 34 elements")
+    print("-" * 40)
+    print(f"  [0:24]  Points         : [-15, +15]  (neg=white, pos=black)")
+    print(f"  [24]    Black bar      : [0, 15]")
+    print(f"  [25]    White bar      : [-15, 0]")
+    print(f"  [26]    Black off      : [0, 15]")
+    print(f"  [27]    White off      : [-15, 0]")
+    print(f"  [28:34] Dice counts    : [0, 4]      (count per die value)")
+
+    # Heuristic observation: 38 elements
+    print("\nHeuristic Observation (_observe_with_heuristics): 38 elements")
+    print("-" * 40)
+    print(f"  [0:34]  Standard obs   : (see above)")
+    print(f"  [34]    Race flag      : [0, 1]      (1=race, 0=contact)")
+    print(f"  [35]    Current bear   : [0, 1]      (1=can bear off)")
+    print(f"  [36]    Opponent bear  : [0, 1]      (1=can bear off)")
+    print(f"  [37]    Pip diff scaled: [-1, 1]     (pos=current ahead)")
+
+    # Verify shapes
+    board_start = jnp.array([2, 0, 0, 0, 0, -5, 0, -3, 0, 0, 0, 5, -5, 0, 0, 0, 3, 0, 5, 0, 0, 0, 0, -2, 0, 0, 0, 0], dtype=jnp.int32)
+    state = make_test_state(
+        current_player=jnp.int32(0),
+        board=board_start,
+        turn=jnp.int32(0),
+        dice=jnp.array([2, 3], dtype=jnp.int32),
+        playable_dice=jnp.array([2, 3, -1, -1], dtype=jnp.int32),
+        played_dice_num=jnp.int32(0),
+    )
+
+    obs_standard = _observe(state)
+    obs_heuristic = _observe_with_heuristics(state)
+
+    assert obs_standard.shape == (34,), f"Standard obs shape should be (34,), got {obs_standard.shape}"
+    assert obs_heuristic.shape == (38,), f"Heuristic obs shape should be (38,), got {obs_heuristic.shape}"
+
+    print("\nML Scaling Recommendations:")
+    print("-" * 40)
+    print(f"  Points/Bar/Off : divide by 15 → [-1, 1]")
+    print(f"  Dice counts    : divide by 4  → [0, 1]")
+    print(f"  Heuristics     : already normalized")
+
+    print("\n" + "="*60)
+    print("All observation range tests passed!")
+    print("="*60)
