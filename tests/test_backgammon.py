@@ -36,6 +36,10 @@ from pgx.backgammon import (
     _pip_count_opponent,
     _pip_count_differential_scaled,
     _observe_with_heuristics,
+    # Full observation with blot/blocker
+    _blot_board,
+    _blocker_board,
+    _observe_full,
 )
 import os
 from pgx._src.api_test import (
@@ -1718,3 +1722,195 @@ def test_observation_complete_summary():
     print("\n" + "="*60)
     print("All observation range tests passed!")
     print("="*60)
+
+
+# ==============================================================================
+# == FULL OBSERVATION WITH BLOT/BLOCKER TESTS ==================================
+# ==============================================================================
+
+def test_blot_board():
+    """Test blot detection on points."""
+    from pgx.backgammon import _blot_board
+
+    board = jnp.zeros(28, dtype=jnp.int32)
+    board = board.at[0].set(1)    # Current player blot
+    board = board.at[5].set(-1)   # Opponent blot
+    board = board.at[10].set(2)   # Not a blot (2 checkers)
+    board = board.at[15].set(-3)  # Not a blot (3 checkers)
+    board = board.at[20].set(0)   # Empty point
+
+    blots = _blot_board(board)
+    assert blots.shape == (24,), f"Expected shape (24,), got {blots.shape}"
+    assert blots[0] == 1.0, f"Current blot at 0 should be 1.0, got {blots[0]}"
+    assert blots[5] == -1.0, f"Opponent blot at 5 should be -1.0, got {blots[5]}"
+    assert blots[10] == 0.0, f"2 checkers at 10 should not be blot, got {blots[10]}"
+    assert blots[15] == 0.0, f"3 checkers at 15 should not be blot, got {blots[15]}"
+    assert blots[20] == 0.0, f"Empty at 20 should be 0, got {blots[20]}"
+
+    print("All _blot_board tests passed!")
+
+
+def test_blocker_board():
+    """Test blocker detection on points."""
+    from pgx.backgammon import _blocker_board
+
+    board = jnp.zeros(28, dtype=jnp.int32)
+    board = board.at[0].set(2)    # Current 2 checkers
+    board = board.at[5].set(5)    # Current 5 checkers
+    board = board.at[10].set(-2)  # Opponent 2 checkers
+    board = board.at[15].set(-4)  # Opponent 4 checkers
+    board = board.at[20].set(1)   # Blot (not a blocker)
+    board = board.at[21].set(-1)  # Opponent blot (not a blocker)
+
+    blockers = _blocker_board(board)
+    assert blockers.shape == (24,), f"Expected shape (24,), got {blockers.shape}"
+    assert blockers[0] == 0.5, f"2 checkers at 0 should be 0.5, got {blockers[0]}"
+    assert blockers[5] == 1.0, f"5 checkers at 5 should be 1.0, got {blockers[5]}"
+    assert blockers[10] == -0.5, f"Opponent 2 at 10 should be -0.5, got {blockers[10]}"
+    assert blockers[15] == -1.0, f"Opponent 4 at 15 should be -1.0, got {blockers[15]}"
+    assert blockers[20] == 0.0, f"Blot at 20 should not be blocker, got {blockers[20]}"
+    assert blockers[21] == 0.0, f"Opponent blot at 21 should not be blocker, got {blockers[21]}"
+
+    print("All _blocker_board tests passed!")
+
+
+def test_observe_full():
+    """Test full observation with scaling and all features."""
+    from pgx.backgammon import _observe_full
+
+    # Starting position board
+    board_start = jnp.array([2, 0, 0, 0, 0, -5, 0, -3, 0, 0, 0, 5, -5, 0, 0, 0, 3, 0, 5, 0, 0, 0, 0, -2, 0, 0, 0, 0], dtype=jnp.int32)
+
+    state = make_test_state(
+        current_player=jnp.int32(0),
+        board=board_start,
+        turn=jnp.int32(0),
+        dice=jnp.array([2, 3], dtype=jnp.int32),
+        playable_dice=jnp.array([2, 3, -1, -1], dtype=jnp.int32),
+        played_dice_num=jnp.int32(0),
+    )
+
+    obs = _observe_full(state)
+
+    # Check shape: 86 elements
+    assert obs.shape == (86,), f"Expected shape (86,), got {obs.shape}"
+
+    # Check board is scaled: 2/15 ≈ 0.133
+    assert jnp.isclose(obs[0], 2/15), f"Board[0] should be 2/15, got {obs[0]}"
+    assert jnp.isclose(obs[5], -5/15), f"Board[5] should be -5/15, got {obs[5]}"
+
+    # Check dice is scaled: dice 3 and 4 → indices 30 and 31
+    # playable_dice = [2, 3] means die values 3 and 4 (0-indexed)
+    assert jnp.isclose(obs[30], 0.25), f"Dice[2] (die value 3) should be 0.25, got {obs[30]}"
+    assert jnp.isclose(obs[31], 0.25), f"Dice[3] (die value 4) should be 0.25, got {obs[31]}"
+
+    # Check heuristics
+    assert obs[34] == 0, f"Race flag should be 0 (not a race), got {obs[34]}"
+    assert obs[35] == 0, f"Current bear off should be 0, got {obs[35]}"
+    assert obs[36] == 0, f"Opponent bear off should be 0, got {obs[36]}"
+
+    # Check blot features (indices 38-62)
+    # Starting position has 2 checkers at point 0, so no blot there
+    assert obs[38] == 0.0, f"Point 0 has 2 checkers, not a blot, got {obs[38]}"
+
+    # Check blocker features (indices 62-86)
+    # Starting position has 2 at point 0
+    assert obs[62] == 0.5, f"Point 0 has 2 checkers → 0.5 blocker, got {obs[62]}"
+    # Point 5 has -5 white checkers → -1.0 blocker
+    assert obs[62 + 5] == -1.0, f"Point 5 has -5 → -1.0 blocker, got {obs[62 + 5]}"
+
+    print("All _observe_full tests passed!")
+
+
+def test_observe_full_all_scaled():
+    """Verify all observation values are in [-1, 1] range."""
+    from pgx.backgammon import _observe_full
+
+    # Test with valid extreme board positions (15 checkers per side)
+    board = jnp.zeros(28, dtype=jnp.int32)
+    board = board.at[0].set(15)    # All black at point 0 (max 15)
+    board = board.at[23].set(-15)  # All white at point 23 (max -15)
+
+    state = make_test_state(
+        current_player=jnp.int32(0),
+        board=board,
+        turn=jnp.int32(0),
+        dice=jnp.array([5, 5], dtype=jnp.int32),  # Doubles
+        playable_dice=jnp.array([5, 5, 5, 5], dtype=jnp.int32),
+        played_dice_num=jnp.int32(0),
+    )
+
+    obs = _observe_full(state)
+
+    # ALL values should be in [-1, 1]
+    assert jnp.all(obs >= -1.0), f"Min value {obs.min()} < -1"
+    assert jnp.all(obs <= 1.0), f"Max value {obs.max()} > 1"
+
+    # Check specific extreme values
+    assert jnp.isclose(obs[0], 1.0), f"15/15 should be 1.0, got {obs[0]}"
+    assert jnp.isclose(obs[23], -1.0), f"-15/15 should be -1.0, got {obs[23]}"
+
+    # Test with bar checkers (valid: 15 total per side)
+    board2 = jnp.zeros(28, dtype=jnp.int32)
+    board2 = board2.at[24].set(15)   # All black on bar
+    board2 = board2.at[25].set(-15)  # All white on bar
+
+    state2 = make_test_state(
+        current_player=jnp.int32(0),
+        board=board2,
+        turn=jnp.int32(0),
+        dice=jnp.array([0, 0], dtype=jnp.int32),
+        playable_dice=jnp.array([0, 0, 0, 0], dtype=jnp.int32),
+        played_dice_num=jnp.int32(0),
+    )
+
+    obs2 = _observe_full(state2)
+
+    # Check bar values are scaled properly
+    assert jnp.isclose(obs2[24], 1.0), f"Bar 15/15 should be 1.0, got {obs2[24]}"
+    assert jnp.isclose(obs2[25], -1.0), f"Bar -15/15 should be -1.0, got {obs2[25]}"
+
+    # Pip differential should also be in range
+    assert obs2[37] >= -1.0 and obs2[37] <= 1.0, f"Pip diff out of range: {obs2[37]}"
+
+    print("All _observe_full_all_scaled tests passed!")
+
+
+def test_observe_full_blot_blocker_values():
+    """Test specific blot and blocker values in full observation."""
+    from pgx.backgammon import _observe_full
+
+    # Create a board with specific blot/blocker patterns
+    board = jnp.zeros(28, dtype=jnp.int32)
+    board = board.at[0].set(1)    # Current blot → blots[0] = 1.0
+    board = board.at[5].set(-1)   # Opponent blot → blots[5] = -1.0
+    board = board.at[10].set(2)   # Current 2 → blockers[10] = 0.5
+    board = board.at[15].set(4)   # Current 4 → blockers[15] = 1.0
+    board = board.at[20].set(-2)  # Opponent 2 → blockers[20] = -0.5
+    board = board.at[22].set(-5)  # Opponent 5 → blockers[22] = -1.0
+    board = board.at[26].set(3)   # Some off (not in blot/blocker range)
+    board = board.at[27].set(-2)  # Some off
+
+    state = make_test_state(
+        current_player=jnp.int32(0),
+        board=board,
+        turn=jnp.int32(0),
+        dice=jnp.array([0, 1], dtype=jnp.int32),
+        playable_dice=jnp.array([0, 1, -1, -1], dtype=jnp.int32),
+        played_dice_num=jnp.int32(0),
+    )
+
+    obs = _observe_full(state)
+
+    # Blot features at indices 38-61
+    assert obs[38 + 0] == 1.0, f"Blot at point 0 should be 1.0, got {obs[38 + 0]}"
+    assert obs[38 + 5] == -1.0, f"Blot at point 5 should be -1.0, got {obs[38 + 5]}"
+    assert obs[38 + 10] == 0.0, f"Point 10 (2 checkers) should not be blot, got {obs[38 + 10]}"
+
+    # Blocker features at indices 62-85
+    assert obs[62 + 10] == 0.5, f"Blocker at point 10 (2) should be 0.5, got {obs[62 + 10]}"
+    assert obs[62 + 15] == 1.0, f"Blocker at point 15 (4) should be 1.0, got {obs[62 + 15]}"
+    assert obs[62 + 20] == -0.5, f"Blocker at point 20 (-2) should be -0.5, got {obs[62 + 20]}"
+    assert obs[62 + 22] == -1.0, f"Blocker at point 22 (-5) should be -1.0, got {obs[62 + 22]}"
+
+    print("All _observe_full_blot_blocker_values tests passed!")

@@ -181,7 +181,7 @@ class Backgammon(core.Env):
 
     @property
     def version(self) -> str:
-        return "v2.2"
+        return "v2.3"
 
     @property
     def num_players(self) -> int:
@@ -427,6 +427,93 @@ def _observe_with_heuristics(state: State) -> Array:
         jnp.array([bear_off_current], dtype=jnp.float32),   # 1 element
         jnp.array([bear_off_opponent], dtype=jnp.float32),  # 1 element
         jnp.array([pip_differential], dtype=jnp.float32),   # 1 element
+    ])
+
+
+def _blot_board(board: Array) -> Array:
+    """
+    Extract blot positions for points 0-23.
+
+    A blot is a single checker that can be hit by the opponent.
+
+    Returns:
+        24-element array: +1 for current player blot, -1 for opponent blot, 0 otherwise
+    """
+    points = board[:24]
+    current_blots = (points == 1).astype(jnp.float32)
+    opponent_blots = (points == -1).astype(jnp.float32) * -1
+    return current_blots + opponent_blots
+
+
+def _blocker_board(board: Array) -> Array:
+    """
+    Extract blocker positions for points 0-23.
+
+    A blocker is 2 or more checkers that form a "made point" blocking opponent movement.
+
+    Returns:
+        24-element array:
+        - +0.5 for 2 checkers, +1 for 3+ checkers (current player)
+        - -0.5 for 2 checkers, -1 for 3+ checkers (opponent)
+        - 0 otherwise
+    """
+    points = board[:24]
+    # Current player blockers
+    curr_2 = (points == 2).astype(jnp.float32) * 0.5
+    curr_3plus = (points >= 3).astype(jnp.float32)
+    # Opponent blockers
+    opp_2 = (points == -2).astype(jnp.float32) * -0.5
+    opp_3plus = (points <= -3).astype(jnp.float32) * -1.0
+    return curr_2 + curr_3plus + opp_2 + opp_3plus
+
+
+def _observe_full(state: State) -> Array:
+    """
+    Return scaled observation with all features (86 elements).
+
+    All values normalized to [-1, 1] range for ML.
+
+    Observation structure:
+    - [0:28]   Scaled board (raw / 15)
+    - [28:34]  Scaled dice counts (raw / 4)
+    - [34]     Race flag (1 = race, 0 = contact possible)
+    - [35]     Current player can bear off (1 = yes, 0 = no)
+    - [36]     Opponent can bear off (1 = yes, 0 = no)
+    - [37]     Scaled pip count differential (positive = current ahead)
+    - [38:62]  Blot board (+1 current blot, -1 opponent blot)
+    - [62:86]  Blocker board (±0.5 for 2, ±1 for 3+)
+
+    Returns:
+        86-element observation array with all values in [-1, 1]
+    """
+    board = state._board
+
+    # Scaled board (28 elements) - divide by 15
+    scaled_board = board.astype(jnp.float32) / 15.0
+
+    # Scaled dice (6 elements) - divide by 4
+    dice_counts = _to_playable_dice_count(state._playable_dice)
+    scaled_dice = dice_counts.astype(jnp.float32) / 4.0
+
+    # Heuristics (4 elements) - already in [0,1] or [-1,1]
+    race_flag = _is_race(board).astype(jnp.float32)
+    bear_off_current = _can_bear_off_current(board).astype(jnp.float32)
+    bear_off_opponent = _can_bear_off_opponent(board).astype(jnp.float32)
+    pip_diff = _pip_count_differential_scaled(board)
+
+    # Blot/Blocker features (48 elements)
+    blots = _blot_board(board)
+    blockers = _blocker_board(board)
+
+    return jnp.concatenate([
+        scaled_board,                    # [0:28]
+        scaled_dice,                     # [28:34]
+        jnp.array([race_flag]),          # [34]
+        jnp.array([bear_off_current]),   # [35]
+        jnp.array([bear_off_opponent]),  # [36]
+        jnp.array([pip_diff]),           # [37]
+        blots,                           # [38:62]
+        blockers,                        # [62:86]
     ])
 
 
