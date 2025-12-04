@@ -38,7 +38,7 @@ _NO_OP_MASK = jnp.zeros(26 * 6, dtype=jnp.bool_).at[0:6].set(True)
 @dataclass
 class State(core.State):
     current_player: Array = jnp.int32(0)
-    observation: Array = jnp.zeros(34, dtype=jnp.int32)
+    observation: Array = jnp.zeros(86, dtype=jnp.float32)
     rewards: Array = jnp.float32([0.0, 0.0])
     terminated: Array = FALSE
     truncated: Array = FALSE
@@ -229,15 +229,8 @@ def _step(state: State, action: Array, key) -> State:
 
 
 def _observe(state: State) -> Array:
-    """
-    Return observation for current player
-    """
-    board: Array = state._board
-    playable_dice_count_vec: Array = _to_playable_dice_count(
-        state._playable_dice
-    )  # 6 dim vec which represents the count of playable die.
-
-    return jnp.concatenate((board, playable_dice_count_vec), axis=None)
+    """Return observation for current player"""
+    return _observe_full(state)
 
 
 # ==============================================================================
