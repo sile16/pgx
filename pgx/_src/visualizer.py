@@ -632,6 +632,14 @@ class Visualizer:
                 )
             else:
                 self.config["COLOR_SET"] = ColorSet("white", "black", "lightgray", "white", "white", "black")
+        elif _state.env_id == "pig":
+            from pgx._src.dwg.pig import _make_pig_dwg
+
+            self.config["GRID_SIZE"] = 30
+            self.config["BOARD_WIDTH"] = 6
+            self.config["BOARD_HEIGHT"] = 5
+            self._make_dwg_group = _make_pig_dwg  # type:ignore
+            self.config["COLOR_SET"] = ColorSet("black", "white", "black", "black", "white", "black")
         else:
             assert False
 

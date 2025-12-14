@@ -30,7 +30,7 @@ class State(core.State):
     rewards: Array = jnp.float32([0.0, 0.0])
     terminated: Array = FALSE
     truncated: Array = FALSE
-    legal_action_mask: Array = jnp.zeros(2, dtype=jnp.bool_)
+    legal_action_mask: Array = jnp.zeros(6, dtype=jnp.bool_)
     _step_count: Array = jnp.int32(0)
     # --- Pig specific ---
     _scores: Array = jnp.zeros(2, dtype=jnp.int32)
@@ -72,9 +72,11 @@ class Pig(core.Env):
 def _init(rng: PRNGKey) -> State:
     rng, subkey = jax.random.split(rng)
     current_player = jnp.int32(jax.random.bernoulli(subkey))
+    legal_action_mask = jnp.zeros(6, dtype=jnp.bool_)
+    legal_action_mask = legal_action_mask.at[0].set(True)
     return State(
         current_player=current_player,
-        legal_action_mask=jnp.array([True, False], dtype=jnp.bool_),  # Must roll at start
+        legal_action_mask=legal_action_mask,  # Must roll at start
         _scores=jnp.zeros(2, dtype=jnp.int32),
         _turn_total=jnp.int32(0)
     )  # type: ignore
@@ -103,7 +105,10 @@ def _get_legal_action_mask(turn_total: Array) -> Array:
     # Action 1 (Hold) is legal if turn_total > 0
     # Logic: min(turn_total, 1) -> 0 if 0, 1 if > 0 (for positive integers)
     can_hold = jnp.minimum(turn_total, 1).astype(jnp.bool_)
-    return jnp.array([True, can_hold], dtype=jnp.bool_)
+    mask = jnp.zeros(6, dtype=jnp.bool_)
+    mask = mask.at[0].set(True)
+    mask = mask.at[1].set(can_hold)
+    return mask
 
 
 def _roll(state: State, key: PRNGKey) -> State:
