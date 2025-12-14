@@ -58,6 +58,7 @@ EnvId = Literal[
     "minatar-seaquest",
     "minatar-space_invaders",
     "othello",
+    "pig",
     "shogi",
     "sparrow_mahjong",
     "tic_tac_toe",
@@ -409,6 +410,10 @@ def make(env_id: EnvId):  # noqa: C901
         from pgx.othello import Othello
 
         return Othello()
+    elif env_id == "pig":
+        from pgx.pig import Pig
+
+        return Pig()
     elif env_id == "shogi":
         from pgx.shogi import Shogi
 
