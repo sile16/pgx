@@ -35,6 +35,10 @@ class State(core.State):
     # --- Pig specific ---
     _scores: Array = jnp.zeros(2, dtype=jnp.int32)
     _turn_total: Array = jnp.int32(0)
+    # Stochastic related
+    _is_stochastic: Array = FALSE
+    _last_roll: Array = jnp.int32(0)
+    _prev_turn_total: Array = jnp.int32(0)
 
     @property
     def env_id(self) -> core.EnvId:
@@ -44,6 +48,8 @@ class State(core.State):
 class Pig(core.Env):
     def __init__(self):
         super().__init__()
+        # 1-6 (1/6 probability each)
+        self.stochastic_action_probs = jnp.ones(6, dtype=jnp.float32) / 6.0
 
     def _init(self, key: PRNGKey) -> State:
         return _init(key)
@@ -68,6 +74,10 @@ class Pig(core.Env):
     def num_players(self) -> int:
         return 2
 
+    def stochastic_step(self, state: State, action: Array) -> State:
+        # action: 0..5 (roll 1..6)
+        return _stochastic_step(state, action)
+
 
 def _init(rng: PRNGKey) -> State:
     rng, subkey = jax.random.split(rng)
@@ -78,7 +88,10 @@ def _init(rng: PRNGKey) -> State:
         current_player=current_player,
         legal_action_mask=legal_action_mask,  # Must roll at start
         _scores=jnp.zeros(2, dtype=jnp.int32),
-        _turn_total=jnp.int32(0)
+        _turn_total=jnp.int32(0),
+        _is_stochastic=FALSE,
+        _last_roll=jnp.int32(0),
+        _prev_turn_total=jnp.int32(0),
     )  # type: ignore
 
 
@@ -115,6 +128,9 @@ def _roll(state: State, key: PRNGKey) -> State:
     roll = jax.random.randint(key, shape=(), minval=1, maxval=7)  # 1-6
     is_one = (roll == 1)
     
+    # Save previous state info
+    prev_turn_total = state._turn_total
+    
     # If roll is 1: turn total becomes 0.
     # If roll is 2-6: turn total becomes old + roll.
     # Logic: (old + roll) * (1 - is_one)
@@ -128,7 +144,10 @@ def _roll(state: State, key: PRNGKey) -> State:
     return state.replace(
         current_player=new_player,
         _turn_total=new_turn_total,
-        legal_action_mask=_get_legal_action_mask(new_turn_total)
+        legal_action_mask=_get_legal_action_mask(new_turn_total),
+        _is_stochastic=TRUE,
+        _last_roll=roll,
+        _prev_turn_total=prev_turn_total
     )
 
 
@@ -159,7 +178,36 @@ def _hold(state: State) -> State:
         _turn_total=new_turn_total,
         terminated=won,
         rewards=rewards,
-        legal_action_mask=_get_legal_action_mask(new_turn_total)
+        legal_action_mask=_get_legal_action_mask(new_turn_total),
+        _is_stochastic=FALSE,
+        _last_roll=jnp.int32(0),
+        _prev_turn_total=jnp.int32(0)
+    )
+
+def _stochastic_step(state: State, action: Array) -> State:
+    # Reverse the previous roll using saved info
+    prev_turn_total = state._prev_turn_total
+    last_roll = state._last_roll
+    
+    # If last roll was 1, player switched, so we need to revert player
+    is_last_one = (last_roll == 1)
+    # Revert player: (curr - is_one) % 2 ... or just (curr + is_one) % 2 since it toggles
+    prev_player = (state.current_player + is_last_one) % 2
+    
+    # Apply new roll
+    roll = action + 1
+    is_one = (roll == 1)
+    
+    new_turn_total = (prev_turn_total + roll) * (1 - is_one)
+    new_player = (prev_player + is_one) % 2
+    
+    return state.replace(
+        current_player=new_player,
+        _turn_total=new_turn_total,
+        legal_action_mask=_get_legal_action_mask(new_turn_total),
+        _is_stochastic=FALSE,
+        _last_roll=roll,
+        # _prev_turn_total remains the same as we are still relative to that same pre-roll state
     )
 
 
@@ -171,3 +219,13 @@ def _observe(state: State, player_id: Array) -> Array:
     
     obs = jnp.array([my_score, opp_score, state._turn_total], dtype=jnp.float32)
     return obs / 100.0
+
+
+def stochastic_action_to_str(action: Array) -> str:
+    """
+    Convert a stochastic action (dice selection) to a human-readable string.
+    action: 0..5 represents rolling 1..6
+    """
+    return f"Rolled: {int(action) + 1}"
+
+
