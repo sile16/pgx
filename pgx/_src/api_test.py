@@ -66,7 +66,7 @@ def api_test_single(env: Env, num: int = 100, use_key=True):
 
         while True:
             rng, subkey = jax.random.split(rng)
-            action = act_randomly(subkey, state.legal_action_mask)
+            action = act_randomly(subkey, state.legal_action_mask[None, :])[0]
             rng, subkey = jax.random.split(rng)
             if not use_key:
                 subkey = None
