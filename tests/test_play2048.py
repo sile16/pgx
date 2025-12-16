@@ -1,6 +1,6 @@
 import jax
 import jax.numpy as jnp
-from pgx.play2048 import Play2048, _slide_and_merge, State
+from pgx.play2048 import Play2048, _legal_action_mask, _slide_and_merge, State, stochastic_action_to_str
 
 env = Play2048()
 init = jax.jit(env.init)
@@ -133,3 +133,62 @@ def test_api():
     import pgx
     env = pgx.make("2048")
     pgx.api_test(env, 3, use_key=True)
+
+
+def test_stochastic_flag_and_override():
+    env = Play2048()
+    key = jax.random.PRNGKey(0)
+    _, key = jax.random.split(key)  # due to API update
+    state = env.init(key)
+
+    key, subkey = jax.random.split(key)
+    state_after = env.step(state, jnp.int32(3), subkey)  # down
+    assert state_after._is_stochastic
+
+    base = state_after._stochastic_board
+    diff = base != state_after._board
+    assert int(diff.sum()) == 1
+    spawn_pos = int(jnp.argmax(diff))
+    assert int(base[spawn_pos]) == 0
+    assert int(state_after._board[spawn_pos]) in (1, 2)
+
+    original_num = int(state_after._board[spawn_pos])
+    forced_value_idx = 1 if original_num == 1 else 0  # flip 2<->4
+    forced_action = jnp.int32(2 * spawn_pos + forced_value_idx)
+    forced_state = env.stochastic_step(state_after, forced_action)
+
+    assert not forced_state._is_stochastic
+    assert (forced_state.rewards == state_after.rewards).all()
+
+    expected_num = jnp.int32(forced_value_idx + 1)
+    expected_board = base.at[spawn_pos].set(expected_num)
+    assert (forced_state._board == expected_board).all()
+
+    expected_mask = _legal_action_mask(expected_board.reshape((4, 4)))
+    expected_terminated = ~expected_mask.any()
+    expected_mask = jax.lax.select(expected_terminated, jnp.ones_like(expected_mask), expected_mask)
+    assert (forced_state.legal_action_mask == expected_mask).all()
+    assert forced_state.terminated == expected_terminated
+
+
+def test_stochastic_override_invalid_action_is_noop():
+    env = Play2048()
+    key = jax.random.PRNGKey(1)
+    _, key = jax.random.split(key)  # due to API update
+    state = env.init(key)
+
+    key, subkey = jax.random.split(key)
+    state_after = env.step(state, jnp.int32(0), subkey)  # left
+    base = state_after._stochastic_board
+    non_empty_pos = int(jnp.where(base != 0, size=1, fill_value=0)[0][0])
+
+    invalid_action = jnp.int32(2 * non_empty_pos)  # try to place "2" on occupied cell
+    state_invalid = env.stochastic_step(state_after, invalid_action)
+    assert state_invalid._is_stochastic  # still overrideable
+    assert (state_invalid._board == state_after._board).all()
+
+
+def test_stochastic_action_to_str():
+    assert stochastic_action_to_str(jnp.int32(0)) == "Spawned: 2 at (0,0)"
+    assert stochastic_action_to_str(jnp.int32(1)) == "Spawned: 4 at (0,0)"
+    assert stochastic_action_to_str(jnp.int32(31)) == "Spawned: 4 at (3,3)"

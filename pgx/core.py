@@ -60,6 +60,7 @@ EnvId = Literal[
     "othello",
     "pig",
     "shogi",
+    "shut_the_box",
     "sparrow_mahjong",
     "tic_tac_toe",
 ]
@@ -418,6 +419,10 @@ def make(env_id: EnvId):  # noqa: C901
         from pgx.shogi import Shogi
 
         return Shogi()
+    elif env_id == "shut_the_box":
+        from pgx.shut_the_box import ShutTheBox
+
+        return ShutTheBox()
     elif env_id == "sparrow_mahjong":
         from pgx.sparrow_mahjong import SparrowMahjong
 
