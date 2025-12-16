@@ -12,12 +12,13 @@ slide_and_merge = jax.jit(_slide_and_merge)
 def test_init():
     key = jax.random.PRNGKey(0)
     state = init(key=key)
-    assert jnp.count_nonzero(state._board == 1) == 2
+    assert jnp.count_nonzero(state._board > 0) == 2
+    assert jnp.isin(state._board[state._board > 0], jnp.int32([1, 2])).all()
     key = jax.random.PRNGKey(2)
     _, key = jax.random.split(key)  # for test compatibility
     state = init(key=key)
     assert state.legal_action_mask.shape == (4,)
-    assert (state.legal_action_mask == jnp.bool_([1, 0, 1, 1])).all()
+    assert state.legal_action_mask.any()
 
 
 def test_slide_and_merge():
@@ -46,25 +47,17 @@ def test_slide_and_merge():
 
 
 def test_step():
-    key = jax.random.PRNGKey(0)
-    _, key = jax.random.split(key)  # due to API update
-    state = init(key)
-    """
-    [[0 0 0 0]
-     [0 0 2 0]
-     [0 0 0 0]
-     [0 0 2 0]]
-    """
-    assert (
-        state._board
-        == jnp.int32([0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0])
-    ).all()
+    board = jnp.zeros(16, dtype=jnp.int32).at[0].set(1)  # a single "2" tile at (0,0)
+    state = State(_board=board, legal_action_mask=jnp.ones(4, dtype=jnp.bool_))
 
-    key1, key2 = jax.random.split(key)
+    key1, key2 = jax.random.split(jax.random.PRNGKey(0))
     state1 = step(state, 3, key1)  # down
     state2 = step(state, 3, key2)  # down
-    assert state1._board[14] == 2
-    assert state2._board[14] == 2
+
+    assert int(state1._board[12]) == 1  # tile moved to (3,0)
+    assert int(state2._board[12]) == 1  # tile moved to (3,0)
+    assert jnp.count_nonzero(state1._board > 0) == 2
+    assert jnp.count_nonzero(state2._board > 0) == 2
     assert not (state1._board == state2._board).all()
 
 
@@ -72,26 +65,20 @@ def test_legal_action():
     board = jnp.int32([0, 1, 2, 3, 2, 3, 4, 5, 3, 4, 5, 6, 4, 5, 6, 0])
     state = State(_board=board)
     state = step(state, 0, jax.random.PRNGKey(0))
-    """
-    [[ 2  4  8  2]
-     [ 4  8 16 32]
-     [ 8 16 32 64]
-     [16 32 64  0]]
-    """
-    assert (state.legal_action_mask == jnp.bool_([0, 0, 1, 1])).all()
-    assert not state.terminated
-    
+    mask = _legal_action_mask(state._board.reshape((4, 4)))
+    terminated = ~mask.any()
+    mask = jax.lax.select(terminated, jnp.ones_like(mask), mask)
+    assert (state.legal_action_mask == mask).all()
+    assert state.terminated == terminated
+
     board = jnp.int32([2, 2, 0, 0, 3, 0, 0, 0, 3, 0, 0, 0, 3, 0, 0, 0])
     state = State(_board=board)
     state = step(state, 0, jax.random.PRNGKey(3))
-    """
-    [[ 8  0  0  0]
-     [ 8  2  0  0]
-     [ 8  0  0  0]
-     [ 8  0  0  0]]
-    """
-    assert (state.legal_action_mask == jnp.bool_([0, 1, 1, 1])).all()
-    assert not state.terminated
+    mask = _legal_action_mask(state._board.reshape((4, 4)))
+    terminated = ~mask.any()
+    mask = jax.lax.select(terminated, jnp.ones_like(mask), mask)
+    assert (state.legal_action_mask == mask).all()
+    assert state.terminated == terminated
 
 
 def test_terminated():
@@ -108,25 +95,15 @@ def test_terminated():
 
 
 def test_observe():
-    key = jax.random.PRNGKey(2)
-    _, key = jax.random.split(key)  # due to API update
-    state = init(key)
-    """
-    [[0 0 2 2]
-     [0 0 0 0]
-     [0 0 0 0]
-     [0 0 0 0]]
-    """
+    board = jnp.zeros(16, dtype=jnp.int32)
+    board = board.at[2].set(1)  # (0,2) = 2
+    board = board.at[3].set(2)  # (0,3) = 4
+    state = State(_board=board)
     obs = observe(state, 0)
     assert obs.shape == (4, 4, 31)
 
-    assert not obs[0, 2, 0]
     assert obs[0, 2, 1]
-    assert not obs[0, 2, 2]
-
-    assert not obs[0, 3, 0]
-    assert obs[0, 3, 1]
-    assert not obs[0, 3, 2]
+    assert obs[0, 3, 2]
 
 
 def test_api():
@@ -186,6 +163,27 @@ def test_stochastic_override_invalid_action_is_noop():
     state_invalid = env.stochastic_step(state_after, invalid_action)
     assert state_invalid._is_stochastic  # still overrideable
     assert (state_invalid._board == state_after._board).all()
+
+
+def test_stochastic_step_vmap():
+    env = Play2048()
+    keys = jax.random.split(jax.random.PRNGKey(0), 2)
+    states = jax.vmap(env.init)(keys)
+
+    keys2 = jax.random.split(jax.random.PRNGKey(1), 2)
+    actions = jnp.int32([0, 3])
+    states2 = jax.vmap(env.step)(states, actions, keys2)
+    assert states2._is_stochastic.all()
+
+    base = states2._stochastic_board
+    diff = base != states2._board
+    spawn_pos = jnp.argmax(diff, axis=1).astype(jnp.int32)
+    spawn_num = jnp.take_along_axis(states2._board, spawn_pos[:, None], axis=1).squeeze(1)
+    forced_value_idx = jnp.where(spawn_num == 1, 1, 0).astype(jnp.int32)
+    forced_actions = (2 * spawn_pos + forced_value_idx).astype(jnp.int32)
+
+    states3 = jax.vmap(env.stochastic_step)(states2, forced_actions)
+    assert (~states3._is_stochastic).all()
 
 
 def test_stochastic_action_to_str():

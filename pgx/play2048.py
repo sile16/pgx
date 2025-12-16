@@ -216,22 +216,24 @@ def _stochastic_step(state: State, action: Array) -> State:
     base_flat = base_board_2d.ravel()
     can_place = base_flat[pos] == 0
 
-    def _apply():
-        board_2d = base_board_2d.at[pos // 4, pos % 4].set(set_num)
-        legal_action_mask = _legal_action_mask(board_2d)
-        terminated = ~legal_action_mask.any()
-        legal_action_mask = jax.lax.select(terminated, jnp.ones_like(legal_action_mask), legal_action_mask)
-        return state.replace(  # type:ignore
-            _board=board_2d.ravel(),
-            legal_action_mask=legal_action_mask,
-            terminated=terminated,
-            _is_stochastic=FALSE,
-            _stochastic_board=jnp.zeros_like(state._stochastic_board),
-            _last_spawn_pos=pos,
-            _last_spawn_num=set_num,
-        )
+    proposed_board_2d = base_board_2d.at[pos // 4, pos % 4].set(set_num)
+    proposed_mask = _legal_action_mask(proposed_board_2d)
+    proposed_terminated = ~proposed_mask.any()
+    proposed_mask = jax.lax.select(proposed_terminated, jnp.ones_like(proposed_mask), proposed_mask)
 
-    return jax.lax.cond(can_place, _apply, lambda: state)
+    return state.replace(  # type:ignore
+        _board=jnp.where(can_place, proposed_board_2d.ravel(), state._board),
+        legal_action_mask=jnp.where(can_place, proposed_mask, state.legal_action_mask),
+        terminated=jnp.where(can_place, proposed_terminated, state.terminated),
+        _is_stochastic=jnp.where(can_place, FALSE, state._is_stochastic),
+        _stochastic_board=jnp.where(
+            can_place,
+            jnp.zeros_like(state._stochastic_board),
+            state._stochastic_board,
+        ),
+        _last_spawn_pos=jnp.where(can_place, pos, state._last_spawn_pos),
+        _last_spawn_num=jnp.where(can_place, set_num, state._last_spawn_num),
+    )
 
 
 def _slide_and_merge(line):
