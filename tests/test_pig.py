@@ -82,6 +82,33 @@ def test_win_condition():
     assert state.terminated
     assert jnp.all(state.rewards == jnp.array([1.0, -1.0])) # Player 0 wins
 
+def test_step_on_terminated_state_returns_zero_reward():
+    env = pig.Pig()
+    key = jax.random.PRNGKey(0)
+    state = env.init(key)
+
+    # Make the game terminate deterministically: score 99, hold 1 point.
+    state = state.replace(
+        current_player=jnp.int32(0),
+        _scores=jnp.array([99, 0]),
+        _turn_total=jnp.int32(1),
+        legal_action_mask=jnp.array([True, True, False, False, False, False]),
+    )
+    key, subkey = jax.random.split(key)
+    state = env.step(state, jnp.int32(1), subkey)  # Hold -> win
+    assert state.terminated
+    assert jnp.all(state.rewards == jnp.array([1.0, -1.0]))
+    assert state.legal_action_mask.all()
+
+    # Stepping a terminated state should have no effect and yields zero rewards.
+    prev_scores = state._scores
+    key, subkey = jax.random.split(key)
+    state2 = env.step(state, jnp.int32(0), subkey)
+    assert state2.terminated
+    assert jnp.all(state2.rewards == jnp.array([0.0, 0.0]))
+    assert state2.legal_action_mask.all()
+    assert jnp.all(state2._scores == prev_scores)
+
 def test_observe():
     env = pig.Pig()
     key = jax.random.PRNGKey(0)
@@ -90,11 +117,11 @@ def test_observe():
     state = state.replace(current_player=jnp.int32(0), _scores=jnp.array([50, 20]), _turn_total=jnp.int32(15))
 
     # Observe from player 0's perspective
-    obs0 = env.observe(state, jnp.int32(0))
+    obs0 = env.observe(state.replace(current_player=jnp.int32(0)))
     assert jnp.allclose(obs0, jnp.array([50/100, 20/100, 15/100]))
 
     # Observe from player 1's perspective
-    obs1 = env.observe(state, jnp.int32(1))
+    obs1 = env.observe(state.replace(current_player=jnp.int32(1)))
     assert jnp.allclose(obs1, jnp.array([20/100, 50/100, 15/100]))
 
 def test_stochastic_step():

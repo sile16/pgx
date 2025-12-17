@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Optional
+
 import jax
 import jax.numpy as jnp
 
@@ -50,6 +52,16 @@ class Pig(core.Env):
         super().__init__()
         # 1-6 (1/6 probability each)
         self.stochastic_action_probs = jnp.ones(6, dtype=jnp.float32) / 6.0
+
+    def step(self, state: core.State, action: Array, key: Optional[Array] = None) -> core.State:
+        assert key is not None, (
+            "v2.0.0 changes the signature of step. Please specify PRNGKey at the third argument:\n\n"
+            "  * <  v2.0.0: step(state, action)\n"
+            "  * >= v2.0.0: step(state, action, key)\n\n"
+            "See v2.0.0 release note for more details:\n\n"
+            "  https://github.com/sotetsuk/pgx/releases/tag/v2.0.0"
+        )
+        return super().step(state, action, key)
 
     def _init(self, key: PRNGKey) -> State:
         return _init(key)
@@ -227,5 +239,3 @@ def stochastic_action_to_str(action: Array) -> str:
     action: 0..5 represents rolling 1..6
     """
     return f"Rolled: {int(action) + 1}"
-
-

@@ -44,7 +44,7 @@ This illustrative example helps to understand
 - How `state.current_player` is defined
 - How to access the reward of each player
 - How `Env.step` behaves against already terminated states
-- How to use baseline models probided by Pgx
+- How to use baseline models provided by Pgx
 
 ```py
 import jax
@@ -87,7 +87,7 @@ R = state.rewards
 while not (state.terminated | state.truncated).all():
     # Action of random player A
     key, subkey = jax.random.split(key)
-    action_A = jax.jit(act_randomly)(subkey, state)
+    action_A = jax.jit(act_randomly)(subkey, state.legal_action_mask)
     # Greedy action of baseline model B
     logits, value = model(state.observation)
     action_B = logits.argmax(axis=-1)
@@ -101,3 +101,7 @@ print(f"Return of agent B = {R[:, B]}")  # [1. 1. 1. 1. 1. 1. 1. 1. 1. 1.]
 ```
 
 Note that we can avoid to explicitly deal with the first batch dimension like `[:, A]` by using `vmap` later.
+
+### `Env.step` on terminated states
+
+`Env.step` does not automatically re-initialize the environment. If `Env.step` is called on an already terminated (or truncated) state, it returns the same state and sets `state.rewards` to zeros (so the transition gives no reward). If you want auto-reset behavior, wrap the step function with `pgx.experimental.auto_reset`.

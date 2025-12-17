@@ -99,7 +99,7 @@ def test_observation():
     # Set dice: 1 and 1
     state = env.set_dice(state, jnp.array([0, 0], dtype=jnp.int32))
     
-    obs = env.observe(state, jnp.int32(0))
+    obs = env.observe(state)
     
     # Check shapes
     assert obs.shape == (15,)
@@ -211,7 +211,7 @@ def test_jit_compatibility():
     
     # JIT observe
     jit_observe = jax.jit(env.observe)
-    obs = jit_observe(state, state.current_player)
+    obs = jit_observe(state)
     assert obs.shape == env.observation_shape
 
 def test_vmap_compatibility():
