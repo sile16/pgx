@@ -17,7 +17,7 @@ def test_init():
     key = jax.random.PRNGKey(2)
     _, key = jax.random.split(key)  # for test compatibility
     state = init(key=key)
-    assert state.legal_action_mask.shape == (32,)
+    assert state.legal_action_mask.shape == (4,)
     assert state.legal_action_mask.any()
 
 
@@ -48,7 +48,7 @@ def test_slide_and_merge():
 
 def test_step():
     board = jnp.zeros(16, dtype=jnp.int32).at[0].set(1)  # a single "2" tile at (0,0)
-    state = State(_board=board, legal_action_mask=jnp.ones(32, dtype=jnp.bool_))
+    state = State(_board=board, legal_action_mask=jnp.ones(4, dtype=jnp.bool_))
 
     key1, key2 = jax.random.split(jax.random.PRNGKey(0))
     state1 = step(state, 3, key1)  # down
