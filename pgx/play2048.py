@@ -34,7 +34,7 @@ class State(core.State):
     rewards: Array = jnp.float32([0.0])
     terminated: Array = FALSE
     truncated: Array = FALSE
-    legal_action_mask: Array = jnp.ones(4, dtype=jnp.bool_)
+    legal_action_mask: Array = jnp.ones(32, dtype=jnp.bool_)
     _step_count: Array = jnp.int32(0)
     # Stochastic related
     _is_stochastic: Array = FALSE
@@ -164,7 +164,7 @@ def _step(state: State, action, key):
 
 
 def _legal_action_mask(board_2d):
-    return jax.vmap(_can_slide_left)(
+    mask = jax.vmap(_can_slide_left)(
         jnp.array(
             [
                 board_2d,
@@ -174,6 +174,7 @@ def _legal_action_mask(board_2d):
             ]
         )
     )
+    return jnp.pad(mask, (0, 28), constant_values=FALSE)
 
 
 def _observe(state: State, player_id) -> Array:
