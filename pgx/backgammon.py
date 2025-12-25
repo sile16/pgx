@@ -212,41 +212,12 @@ def _init(rng: PRNGKey) -> State:
     return state
 
 
-def _step(state: State, action: Array, key) -> State:
-    """
-    Step when not terminated
-    """
-    return jax.lax.cond(
-        state._is_stochastic,
-        lambda: _chance_step(state, action),
-        lambda: _decision_step(state, action, key),
-    )
-
-
 def _decision_step(state: State, action: Array) -> State:
     state = _update_by_action(state, action)
     return jax.lax.cond(
         _is_all_off(state._board),
         lambda: _winning_step(state),
         lambda: _no_winning_step(state, action),
-    )
-
-
-def _chance_step(state: State, action: Array) -> State:
-    # action is index into _STOCHASTIC_DICE_MAPPING (0-20)
-    dice_idx = action
-    dice = _STOCHASTIC_DICE_MAPPING[dice_idx]
-    
-    playable_dice: Array = _set_playable_dice(dice)
-    played_dice_num: Array = jnp.int32(0)
-    legal_action_mask: Array = _legal_action_mask(state._board, playable_dice, dice, played_dice_num)
-    
-    return state.replace(  # type: ignore
-        _dice=dice,
-        _playable_dice=playable_dice,
-        _played_dice_num=played_dice_num,
-        legal_action_mask=legal_action_mask,
-        _is_stochastic=jnp.array(False, dtype=jnp.bool_),
     )
 
 

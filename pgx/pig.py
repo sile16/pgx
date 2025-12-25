@@ -28,7 +28,7 @@ FALSE = jnp.bool_(False)
 @dataclass
 class State(core.State):
     current_player: Array = jnp.int32(0)
-    observation: Array = jnp.zeros(3, dtype=jnp.float32)
+    observation: Array = jnp.zeros(4, dtype=jnp.float32)
     rewards: Array = jnp.float32([0.0, 0.0])
     terminated: Array = FALSE
     truncated: Array = FALSE
@@ -156,46 +156,6 @@ def _step_stochastic(state: State, action: Array) -> State:
     )
 
 
-def _decision_step(state: State, action: Array, key) -> State:
-    # action: 0 = Roll, 1 = Hold
-    return jax.lax.cond(
-        action == 0,
-        lambda: _prepare_roll(state),
-        lambda: _hold(state)
-    )
-
-
-def _prepare_roll(state: State) -> State:
-    # Transition to stochastic
-    # legal actions for chance: 0..5 (1..6)
-    return state.replace(
-        _prev_turn_total=state._turn_total,
-        _is_stochastic=TRUE,
-        legal_action_mask=jnp.ones(6, dtype=jnp.bool_)
-    )
-
-
-def _chance_step(state: State, action: Array) -> State:
-    # action 0..5 -> roll 1..6
-    roll = action + 1
-    is_one = (roll == 1)
-    
-    # Use saved prev total (or current, as it hasn't changed)
-    prev_turn_total = state._turn_total
-    
-    new_turn_total = (prev_turn_total + roll) * (1 - is_one)
-    new_player = (state.current_player + is_one) % 2
-    
-    return state.replace(
-        current_player=new_player,
-        _turn_total=new_turn_total,
-        legal_action_mask=_get_legal_action_mask(new_turn_total),
-        _is_stochastic=FALSE,
-        _last_roll=roll,
-        _prev_turn_total=prev_turn_total
-    )
-
-
 def _get_legal_action_mask(turn_total: Array) -> Array:
     # Action 0 (Roll) is always legal (True)
     # Action 1 (Hold) is legal if turn_total > 0
@@ -205,13 +165,6 @@ def _get_legal_action_mask(turn_total: Array) -> Array:
     mask = mask.at[0].set(True)
     mask = mask.at[1].set(can_hold)
     return mask
-
-
-def _roll(state: State, key: PRNGKey) -> State:
-    # Kept for potential internal usage, implemented via new primitives
-    state = _step_deterministic(state, jnp.int32(0))
-    roll = jax.random.randint(key, shape=(), minval=0, maxval=6)
-    return _step_stochastic(state, roll)
 
 
 def _hold(state: State) -> State:

@@ -30,7 +30,6 @@ import jax.numpy as jnp
 
 from pgx.backgammon import Backgammon, State
 
-
 class BenchmarkResult(NamedTuple):
     """Results from a benchmark run."""
     batch_size: int
