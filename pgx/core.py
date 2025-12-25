@@ -298,6 +298,81 @@ class Env(abc.ABC):
         return state.replace(rewards=reward, terminated=TRUE)  # type: ignore
 
 
+class StochasticEnv(Env):
+    """
+    Interface for games separating Player Agency (Deterministic) from 
+    Nature Agency (Stochastic).
+    """
+
+    @abc.abstractmethod
+    def step_deterministic(self, state: State, action: Array) -> State:
+        """
+        PHASE 1: Player Decision.
+        Applies the player's action.
+        
+        Returns: 
+            afterstate (State): A special intermediate state.
+                - MUST set internal flag `state._is_stochastic = True`.
+                - MUST zero out stochastic features in observation.
+        """
+        ...
+
+    @abc.abstractmethod
+    def step_stochastic(self, state: State, action: Array) -> State:
+        """
+        PHASE 2: Nature Resolution.
+        Applies a specific random outcome.
+        
+        Args:
+            state: The 'afterstate' from step_deterministic.
+            action: The specific random event index or value.
+            
+        Returns:
+            next_state (State): The resulting state.
+                - MUST set `state._is_stochastic = False`.
+                - MUST populate stochastic features.
+        """
+        ...
+
+    @abc.abstractmethod
+    def chance_outcomes(self, state: State) -> Tuple[Array, Array]:
+        """
+        Returns all possible random outcomes and their probabilities for the current afterstate.
+        
+        Returns:
+            outcomes (Array): Indices/Values of possible outcomes.
+            probs (Array): Probability of each outcome.
+        """
+        ...
+
+    def step_stochastic_random(self, state: State, key: PRNGKey) -> State:
+        """Helper to sample a random outcome and apply it."""
+        outcomes, probs = self.chance_outcomes(state)
+        outcome = jax.random.choice(key, outcomes, p=probs)
+        return self.step_stochastic(state, outcome)
+
+    def _step(self, state: State, action: Array, key: PRNGKey) -> State:
+        """
+        Combines Deterministic -> Stochastic phases for standard evaluation.
+        """
+        # If the state is already a chance node (from external manipulation), resolve it first?
+        # Standard flow: State(P) -> action -> State(C) -> random -> State(P')
+        
+        # 1. Deterministic Step (Player Action)
+        state = self.step_deterministic(state, action)
+        
+        # 2. Stochastic Step (Nature), if applicable
+        # Some actions might lead to immediate termination or next player without chance
+        # e.g., "Hold" in Pig
+        state = jax.lax.cond(
+            state._is_stochastic,
+            lambda: self.step_stochastic_random(state, key),
+            lambda: state
+        )
+        
+        return state
+
+
 def available_envs() -> Tuple[EnvId, ...]:
     """List up all environment id available in `pgx.make` function.
 

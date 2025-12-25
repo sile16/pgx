@@ -13,16 +13,19 @@ def test_init():
 
     assert state.current_player == 0
     assert jnp.all(state._board == 1) # All open
-    assert state._turn_sum == jnp.sum(state._dice + 1)
+    assert state._turn_sum == 0
     assert not state.terminated
     assert state._is_stochastic # Initial state involves roll
-    # At start, with all open, any roll 2-12 should be legal
-    assert state.legal_action_mask.any()
+    # At start, legal decision actions are empty (mask all False)
+    assert not state.legal_action_mask.any()
 
 def test_step_valid_move():
     env = ShutTheBox()
     key = jax.random.PRNGKey(0)
     state = env.init(key)
+    
+    # Resolve initial roll
+    state = env.step(state, jnp.int32(0), key)
     
     # Force dice to be 3+6=9
     state = env.set_dice(state, jnp.array([2, 5], dtype=jnp.int32))
@@ -44,8 +47,8 @@ def test_step_valid_move():
     # Check reward: 9 points
     assert state.rewards[0] == 9.0
     
-    # Check that new dice are rolled (or game over if unlucky)
-    assert state._dice.shape == (2,)
+    # Check that it's now resolved (step() resolves stochastic)
+    assert not state._is_stochastic
 
 def test_termination_no_moves():
     env = ShutTheBox()
@@ -102,7 +105,7 @@ def test_observation():
     obs = env.observe(state)
     
     # Check shapes
-    assert obs.shape == (15,)
+    assert obs.shape == (16,)
     
     # Check board part (0-8)
     assert obs[0] == 0
@@ -114,13 +117,16 @@ def test_observation():
     # Histogram: index 0 (value 1) should be 2. Others 0.
     assert obs[9] == 2
     assert obs[10] == 0
+    
+    # Check flag (15)
+    assert obs[15] == 0.0
 
 def test_api():
     env = ShutTheBox()
     assert env.id == "shut_the_box"
     assert env.num_players == 1
     assert env.num_actions == 512
-    assert env.observation_shape == (15,)
+    assert env.observation_shape == (16,)
 
 # --- Stochastic Tests ---
 
@@ -129,33 +135,30 @@ def test_stochastic_step_transition():
     key = jax.random.PRNGKey(42)
     state = env.init(key)
     
-    # Perform a normal step
-    # Select a valid action
-    action = jnp.argmax(state.legal_action_mask)
-    state = env.step(state, action, key)
+    # Use split API to test transition
+    # Force a roll
+    state = env.step_stochastic(state, jnp.int32(0))
+    assert not state._is_stochastic
     
-    if not state.terminated:
-        # Should be stochastic again (new dice rolled)
-        assert state._is_stochastic
-    else:
-        # If terminated, not stochastic (no new dice)
-        assert not state._is_stochastic
+    # Perform a normal step
+    action = jnp.argmax(state.legal_action_mask)
+    # step() resolves
+    state = env.step(state, action, key)
+    assert not state._is_stochastic
 
 def test_stochastic_step_override():
     env = ShutTheBox()
     key = jax.random.PRNGKey(42)
     state = env.init(key)
     
-    # State has some random dice.
-    # We want to force dice to be (6, 6) -> Sum 12.
-    forced_state = env.stochastic_step(state, jnp.int32(35))
+    # forced_state = env.stochastic_step(state, jnp.int32(35))
+    # stochastic_step is alias to step_stochastic
+    forced_state = env.step_stochastic(state, jnp.int32(35))
     
     assert jnp.all(forced_state._dice == jnp.array([5, 5], dtype=jnp.int32)) # 0-based
     assert forced_state._turn_sum == 12
-    assert not forced_state._is_stochastic # Should be False after forcing
+    assert not forced_state._is_stochastic 
     
-    # Verify legal action mask updated for sum 12
-    # Mask should allow action corresponding to {3, 9} -> bitmask (1<<2)|(1<<8) = 4+256=260
     assert forced_state.legal_action_mask[260]
 
 def test_stochastic_action_probs():
@@ -205,8 +208,8 @@ def test_jit_compatibility():
     
     # JIT step
     jit_step = jax.jit(env.step)
-    action = jnp.argmax(state.legal_action_mask)
-    state = jit_step(state, action, key)
+    # Init state is stochastic, action ignored
+    state = jit_step(state, jnp.int32(0), key)
     assert isinstance(state, pgx.State)
     
     # JIT observe
@@ -227,9 +230,9 @@ def test_vmap_compatibility():
     assert states.current_player.shape == (batch_size,)
     
     # Batch step
-    actions = jnp.argmax(states.legal_action_mask, axis=1)
     v_step = jax.vmap(env.step)
-    states = v_step(states, actions, keys)
+    # Initially all stochastic
+    states = v_step(states, jnp.zeros(batch_size, dtype=jnp.int32), keys)
     
     assert states.rewards.shape == (batch_size, 1)
 
@@ -263,8 +266,8 @@ def test_dice_distribution():
     batch_size = 1000
     
     states = jax.vmap(env.init)(jax.random.split(key, batch_size))
-    actions = jnp.argmax(states.legal_action_mask, axis=1)
-    next_states = jax.vmap(env.step)(states, actions, jax.random.split(key, batch_size))
+    # Initially all stochastic
+    next_states = jax.vmap(env.step)(states, jnp.zeros(batch_size, dtype=jnp.int32), jax.random.split(key, batch_size))
     
     active_mask = ~next_states.terminated
     active_dice = next_states._dice[active_mask]

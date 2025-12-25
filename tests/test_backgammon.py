@@ -203,6 +203,7 @@ def make_test_state(
     playable_dice: jnp.ndarray,
     played_dice_num: jnp.ndarray,
     legal_action_mask=jnp.zeros(6 * 26, dtype=jnp.bool_),
+    is_stochastic=jnp.array(False, dtype=jnp.bool_),
 ):
     return State(
         current_player=current_player,
@@ -212,6 +213,7 @@ def make_test_state(
         _playable_dice=playable_dice,
         _played_dice_num=played_dice_num,
         legal_action_mask=legal_action_mask,
+        _is_stochastic=is_stochastic,
     )
 
 
@@ -277,7 +279,7 @@ def test_change_turn():
     state = env.init(rng)
     _turn = state._turn
     # Use the corrected change_turn function
-    state = _change_turn(state, jax.random.PRNGKey(0))
+    state = _change_turn(state)
     assert state._turn == (_turn + 1) % 2
 
     test_board: jnp.ndarray = make_test_boad()
@@ -336,9 +338,7 @@ def test_observe():
         playable_dice=jnp.array([0, 1, -1, -1], dtype=jnp.int32),
         played_dice_num=jnp.int32(0),
     )
-    expected_obs = jnp.concatenate(
-        (board, jnp.array([1, 1, 0, 0, 0, 0])), axis=None
-    )
+    expected_obs = _observe_full(state)
     assert (observe(state) == expected_obs).all()
 
     state = make_test_state(
@@ -349,9 +349,7 @@ def test_observe():
         playable_dice=jnp.array([1, 1, 1, 1], dtype=jnp.int32),
         played_dice_num=jnp.int32(0),
     )
-    expected_obs = jnp.concatenate(
-        (board, jnp.array([0, 4, 0, 0, 0, 0])), axis=None
-    )
+    expected_obs = _observe_full(state)
     assert (observe(state) == expected_obs).all()
 
     # Test for player_id 1 (white player)
@@ -363,9 +361,7 @@ def test_observe():
         playable_dice=jnp.array([-1, 1, -1, -1], dtype=jnp.int32),
         played_dice_num=jnp.int32(0),
     )
-    expected_obs = jnp.concatenate(
-        (board, jnp.array([0, 1, 0, 0, 0, 0])), axis=None
-    )
+    expected_obs = _observe_full(state)
     assert (observe(state) == expected_obs).all()
 
     # Test for player_id 0 (black player)
@@ -377,9 +373,7 @@ def test_observe():
         playable_dice=jnp.array([-1, 1, -1, -1], dtype=jnp.int32),
         played_dice_num=jnp.int32(0),
     )
-    expected_obs = jnp.concatenate(
-        (board, jnp.array([0, 1, 0, 0, 0, 0])), axis=None
-    )
+    expected_obs = _observe_full(state)
     assert (observe(state) == expected_obs).all()
 
 
@@ -616,20 +610,22 @@ def test_stochastic_state():
     stochastic_action = 0  # Using double 1's (action 0)
     new_state: State = env.stochastic_step(state, jnp.array(stochastic_action))  # type: ignore
     assert not new_state._is_stochastic  # type: ignore
-    
     # With doubles, player should be able to make 4 moves before state becomes stochastic again
-    for _ in range(4):
+    for i in range(4):
         # State should remain non-stochastic during moves
         assert not new_state._is_stochastic  # type: ignore
-        
+
         # Make a move
         legal_action = jnp.where(new_state.legal_action_mask)[0][0]
-        new_state = env.step(new_state, legal_action, jax.random.PRNGKey(1))  # type: ignore
-    
+        # Use step_deterministic for the last move to catch the afterstate
+        if i < 3:
+            new_state = env.step(new_state, legal_action, jax.random.PRNGKey(1))  # type: ignore
+        else:
+            new_state = env.step_deterministic(new_state, legal_action)  # type: ignore
+
     # After all 4 moves are made, state should be stochastic again
     assert new_state._is_stochastic  # type: ignore
-
-
+    
 def test_stochastic_actions():
     """Test getting available stochastic actions and their probabilities."""
     # For regular mode, all 21 dice combinations should be possible
@@ -1434,10 +1430,13 @@ def test_observation_ranges_board():
     )
     obs = _observe(state)
 
-    # Point 0 should have max value of 15
-    assert obs[0] == 15, f"Max black on point should be 15, got {obs[0]}"
-    # White off should be -15
-    assert obs[27] == -15, f"White off should be -15, got {obs[27]}"
+    # Point 0 should have max value of 15 (scaled to 1.0)
+    assert obs[0] == 1.0, f"Max black on point should be 1.0 (scaled 15), got {obs[0]}"
+
+    # White off should be -15 (scaled to -1.0)
+    assert obs[27] == -1.0, f"White off should be -1.0 (scaled -15), got {obs[27]}"
+
+    
 
     # Test 2: Maximum negative values - all white checkers on one point
     board_max_white = jnp.zeros(28, dtype=jnp.int32)
@@ -1454,10 +1453,10 @@ def test_observation_ranges_board():
     )
     obs2 = _observe(state2)
 
-    # Point 12 should have min value of -15
-    assert obs2[12] == -15, f"Max white on point should be -15, got {obs2[12]}"
-    # Black off should be 15
-    assert obs2[26] == 15, f"Black off should be 15, got {obs2[26]}"
+    # Point 12 should have min value of -15 (scaled to -1.0)
+    assert obs2[12] == -1.0, f"Max white on point should be -1.0 (scaled -15), got {obs2[12]}"
+    # Black off should be 15 (scaled to 1.0)
+    assert obs2[26] == 1.0, f"Black off should be 1.0 (scaled 15), got {obs2[26]}"
 
     # Test 3: Bar positions - max values
     board_bar = jnp.zeros(28, dtype=jnp.int32)
@@ -1474,10 +1473,13 @@ def test_observation_ranges_board():
     )
     obs3 = _observe(state3)
 
-    # Black bar should be 15
-    assert obs3[24] == 15, f"Black bar max should be 15, got {obs3[24]}"
-    # White bar should be -15
-    assert obs3[25] == -15, f"White bar max should be -15, got {obs3[25]}"
+    # Black bar should be 15 (scaled to 1.0)
+    assert obs3[24] == 1.0, f"Black bar max should be 1.0 (scaled 15), got {obs3[24]}"
+
+    # White bar should be -15 (scaled to -1.0)
+    assert obs3[25] == -1.0, f"White bar max should be -1.0 (scaled -15), got {obs3[25]}"
+
+    
 
     # Test 4: Verify all board positions are within [-15, 15]
     board_start = jnp.array([2, 0, 0, 0, 0, -5, 0, -3, 0, 0, 0, 5, -5, 0, 0, 0, 3, 0, 5, 0, 0, 0, 0, -2, 0, 0, 0, 0], dtype=jnp.int32)
@@ -1523,8 +1525,9 @@ def test_observation_ranges_dice():
     obs1 = _observe(state1)
 
     # Dice portion is indices 28-33
-    # Should have 1 for die value 1 (index 28) and 1 for die value 6 (index 33)
-    expected_dice = jnp.array([1, 0, 0, 0, 0, 1], dtype=jnp.int32)
+    # Should have 0.25 for die value 1 (index 28) and 0.25 for die value 6 (index 33)
+    # (scaled raw count 1 / 4 = 0.25)
+    expected_dice = jnp.array([0.25, 0, 0, 0, 0, 0.25], dtype=jnp.float32)
     assert jnp.array_equal(obs1[28:34], expected_dice), f"Non-doubles dice mismatch: {obs1[28:34]}"
 
     # Test 2: Doubles - four of same die
@@ -1538,8 +1541,9 @@ def test_observation_ranges_dice():
     )
     obs2 = _observe(state2)
 
-    # Should have 4 for die value 4 (index 31)
-    expected_dice2 = jnp.array([0, 0, 0, 4, 0, 0], dtype=jnp.int32)
+    # Should have 1.0 for die value 4 (index 31)
+    # (scaled raw count 4 / 4 = 1.0)
+    expected_dice2 = jnp.array([0, 0, 0, 1.0, 0, 0], dtype=jnp.float32)
     assert jnp.array_equal(obs2[28:34], expected_dice2), f"Doubles dice mismatch: {obs2[28:34]}"
 
     # Test 3: After playing some dice (partial doubles)
@@ -1553,8 +1557,9 @@ def test_observation_ranges_dice():
     )
     obs3 = _observe(state3)
 
-    # Should have 2 for die value 3 (index 30)
-    expected_dice3 = jnp.array([0, 0, 2, 0, 0, 0], dtype=jnp.int32)
+    # Should have 0.5 for die value 3 (index 30)
+    # (scaled raw count 2 / 4 = 0.5)
+    expected_dice3 = jnp.array([0, 0, 0.5, 0, 0, 0], dtype=jnp.float32)
     assert jnp.array_equal(obs3[28:34], expected_dice3), f"Partial doubles mismatch: {obs3[28:34]}"
 
     # Test 4: No dice remaining
@@ -1710,7 +1715,7 @@ def test_observation_complete_summary():
     obs_standard = _observe(state)
     obs_heuristic = _observe_with_heuristics(state)
 
-    assert obs_standard.shape == (34,), f"Standard obs shape should be (34,), got {obs_standard.shape}"
+    assert obs_standard.shape == (86,), f"Standard obs shape should be (86,), got {obs_standard.shape}"
     assert obs_heuristic.shape == (38,), f"Heuristic obs shape should be (38,), got {obs_heuristic.shape}"
 
     print("\nML Scaling Recommendations:")

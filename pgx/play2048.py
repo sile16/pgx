@@ -13,7 +13,7 @@
 # limitations under the License.
 
 
-from typing import Optional
+from typing import Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -30,7 +30,7 @@ ZERO = jnp.int32(0)
 @dataclass
 class State(core.State):
     current_player: Array = jnp.int32(0)
-    observation: Array = jnp.zeros(16, dtype=jnp.bool_)
+    observation: Array = jnp.zeros((4, 4, 32), dtype=jnp.bool_)
     rewards: Array = jnp.float32([0.0])
     terminated: Array = FALSE
     truncated: Array = FALSE
@@ -44,30 +44,14 @@ class State(core.State):
     _last_spawn_pos: Array = jnp.int32(-1)  # 0..15
     _last_spawn_num: Array = jnp.int32(0)  # 1 (2) or 2 (4)
     # --- 2048 specific ---
-    # 4x4 board
-    # [[ 0,  1,  2,  3],
-    #  [ 4,  5,  6,  7],
-    #  [ 8,  9, 10, 11],
-    #  [12, 13, 14, 15]]
     _board: Array = jnp.zeros(16, jnp.int32)
-    #  Board is expressed as a power of 2.
-    # e.g.
-    # [[ 0,  0,  1,  1],
-    #  [ 1,  0,  1,  2],
-    #  [ 3,  3,  6,  7],
-    #  [ 3,  6,  7,  9]]
-    # means
-    # [[ 0,  0,  2,  2],
-    #  [ 2,  0,  2,  4],
-    #  [ 8,  8, 64,128],
-    #  [ 8, 64,128,512]]
 
     @property
     def env_id(self) -> core.EnvId:
         return "2048"
 
 
-class Play2048(core.Env):
+class Play2048(core.StochasticEnv):
     def __init__(self):
         super().__init__()
         # (pos, value) where pos=0..15, value in {2,4}.
@@ -78,13 +62,6 @@ class Play2048(core.Env):
         )
 
     def step(self, state: core.State, action: Array, key: Optional[Array] = None) -> core.State:
-        assert key is not None, (
-            "v2.0.0 changes the signature of step. Please specify PRNGKey at the third argument:\n\n"
-            "  * <  v2.0.0: step(state, action)\n"
-            "  * >= v2.0.0: step(state, action, key)\n\n"
-            "See v2.0.0 release note for more details:\n\n"
-            "  https://github.com/sotetsuk/pgx/releases/tag/v2.0.0"
-        )
         return super().step(state, action, key)
 
     def _init(self, key: PRNGKey) -> State:
@@ -92,14 +69,35 @@ class Play2048(core.Env):
 
     def _step(self, state: core.State, action: Array, key) -> State:
         assert isinstance(state, State)
-        return _step(state, action, key)
+        return super()._step(state, action, key)
 
     def _observe(self, state: core.State, player_id: Array) -> Array:
         assert isinstance(state, State)
         return _observe(state, player_id)
 
+    def step_deterministic(self, state: State, action: Array) -> State:
+        return _step_deterministic(state, action)
+
+    def step_stochastic(self, state: State, action: Array) -> State:
+        return _step_stochastic(state, action)
+
+    def chance_outcomes(self, state: State) -> Tuple[Array, Array]:
+        base_board_2d = state._stochastic_board.reshape((4, 4))
+        flat = base_board_2d.ravel()
+        empty_mask = (flat == 0)
+        n_empty = empty_mask.sum()
+        p_pos = jnp.where(n_empty > 0, 1.0 / n_empty, 0.0)
+        
+        valid_pos = empty_mask[:, None] # (16, 1)
+        base_probs = jnp.array([0.9, 0.1]) # (2,)
+        probs_grid = valid_pos * base_probs * p_pos
+        probs_flat = probs_grid.ravel()
+        
+        outcomes = jnp.arange(32, dtype=jnp.int32)
+        return outcomes, probs_flat
+
     def stochastic_step(self, state: State, action: Array) -> State:
-        return _stochastic_step(state, action)
+        return self.step_stochastic(state, action)
 
     @property
     def id(self) -> core.EnvId:
@@ -124,7 +122,7 @@ def _init(rng: PRNGKey) -> State:
     )  # type:ignore
 
 
-def _step(state: State, action, key):
+def _step_deterministic(state: State, action: Array) -> State:
     """action: 0(left), 1(up), 2(right), 3(down)"""
     board_2d = state._board.reshape((4, 4))
     board_2d = jax.lax.switch(
@@ -147,19 +145,39 @@ def _step(state: State, action, key):
         ],
     )
 
-    board_before_spawn = board_2d
-    board_2d, (spawn_pos, spawn_num) = _add_random_num_with_info(board_2d, key)
-
-    legal_action_mask = _legal_action_mask(board_2d)
     return state.replace(  # type:ignore
         _board=board_2d.ravel(),
         rewards=jnp.float32([reward.sum()]),
-        legal_action_mask=legal_action_mask,
-        terminated=~legal_action_mask.any(),
+        legal_action_mask=jnp.zeros(4, dtype=jnp.bool_),
+        terminated=FALSE,
         _is_stochastic=TRUE,
-        _stochastic_board=board_before_spawn.ravel(),
-        _last_spawn_pos=spawn_pos,
-        _last_spawn_num=spawn_num,
+        _stochastic_board=board_2d.ravel(),
+        _last_spawn_pos=jnp.int32(-1),
+        _last_spawn_num=jnp.int32(0),
+    )
+
+
+def _step_stochastic(state: State, action: Array) -> State:
+    """
+    action = 2 * pos + value_idx, where pos=0..15 and value_idx: 0->2, 1->4.
+    """
+    base_board_2d = state._stochastic_board.reshape((4, 4))
+    pos = (action // 2).astype(jnp.int32)
+    value_idx = (action % 2).astype(jnp.int32)
+    set_num = (value_idx + 1).astype(jnp.int32)  # 1 (2) or 2 (4)
+
+    board_2d = base_board_2d.at[pos // 4, pos % 4].set(set_num)
+
+    legal_action_mask = _legal_action_mask(board_2d)
+    terminated = ~legal_action_mask.any()
+    
+    return state.replace(  # type:ignore
+        _board=board_2d.ravel(),
+        legal_action_mask=legal_action_mask,
+        terminated=terminated,
+        _is_stochastic=FALSE,
+        _last_spawn_pos=pos,
+        _last_spawn_num=set_num,
     )
 
 
@@ -177,9 +195,10 @@ def _legal_action_mask(board_2d):
 
 
 def _observe(state: State, player_id) -> Array:
-    obs = jnp.zeros((16, 31), dtype=jnp.bool_)
+    obs = jnp.zeros((16, 32), dtype=jnp.bool_)
     obs = jax.lax.fori_loop(0, 16, lambda i, obs: obs.at[i, state._board[i]].set(TRUE), obs)
-    return obs.reshape((4, 4, 31))
+    obs = obs.at[:, 31].set(state._is_stochastic)
+    return obs.reshape((4, 4, 32))
 
 
 def _add_random_num(board_2d, key):
@@ -201,39 +220,6 @@ def _add_random_num_with_info(board_2d, key):
     set_num = jax.random.choice(sub_key, jnp.int32([1, 2]), p=jnp.array([0.9, 0.1]))
     board_2d = board_2d.at[pos // 4, pos % 4].set(set_num)
     return board_2d, (pos.astype(jnp.int32), set_num.astype(jnp.int32))
-
-
-def _stochastic_step(state: State, action: Array) -> State:
-    """Override the internally sampled tile spawn of the previous step.
-
-    action = 2 * pos + value_idx, where pos=0..15 and value_idx: 0->2, 1->4.
-    """
-    base_board_2d = state._stochastic_board.reshape((4, 4))
-    pos = (action // 2).astype(jnp.int32)
-    value_idx = (action % 2).astype(jnp.int32)
-    set_num = (value_idx + 1).astype(jnp.int32)  # 1 (2) or 2 (4)
-
-    base_flat = base_board_2d.ravel()
-    can_place = base_flat[pos] == 0
-
-    proposed_board_2d = base_board_2d.at[pos // 4, pos % 4].set(set_num)
-    proposed_mask = _legal_action_mask(proposed_board_2d)
-    proposed_terminated = ~proposed_mask.any()
-    proposed_mask = jax.lax.select(proposed_terminated, jnp.ones_like(proposed_mask), proposed_mask)
-
-    return state.replace(  # type:ignore
-        _board=jnp.where(can_place, proposed_board_2d.ravel(), state._board),
-        legal_action_mask=jnp.where(can_place, proposed_mask, state.legal_action_mask),
-        terminated=jnp.where(can_place, proposed_terminated, state.terminated),
-        _is_stochastic=jnp.where(can_place, FALSE, state._is_stochastic),
-        _stochastic_board=jnp.where(
-            can_place,
-            jnp.zeros_like(state._stochastic_board),
-            state._stochastic_board,
-        ),
-        _last_spawn_pos=jnp.where(can_place, pos, state._last_spawn_pos),
-        _last_spawn_num=jnp.where(can_place, set_num, state._last_spawn_num),
-    )
 
 
 def _slide_and_merge(line):

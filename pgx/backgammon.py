@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from functools import partial
-from typing import Optional
+from typing import Optional, Tuple
 import dataclasses
 
 import jax
@@ -96,7 +96,7 @@ def _build_lookup_tables():
 # Create the constants immediately
 _ACTION_SRC_LOOKUP, _ACTION_DIE_LOOKUP, _ACTION_TGT_LOOKUP = _build_lookup_tables()
 
-class Backgammon(core.Env):
+class Backgammon(core.StochasticEnv):
     def __init__(self, simple_doubles: bool = False, short_game: bool = False):
         super().__init__()
         self.simple_doubles = simple_doubles
@@ -109,13 +109,6 @@ class Backgammon(core.Env):
 
 
     def step(self, state: core.State, action: Array, key: Optional[Array] = None) -> core.State:
-        assert key is not None, (
-            "v2.0.0 changes the signature of step. Please specify PRNGKey at the third argument:\n\n"
-            "  * <  v2.0.0: step(state, action)\n"
-            "  * >= v2.0.0: step(state, action, key)\n\n"
-            "See v2.0.0 release note for more details:\n\n"
-            "  https://github.com/sotetsuk/pgx/releases/tag/v2.0.0"
-        )
         return super().step(state, action, key)
 
     def _init(self, key: PRNGKey) -> State:
@@ -125,20 +118,36 @@ class Backgammon(core.Env):
 
     def _step(self, state: core.State, action: Array, key) -> State:
         assert isinstance(state, State)
-        return _step(state, action, key)
+        return super()._step(state, action, key)
 
     def _observe(self, state: core.State, player_id: Optional[Array] = None) -> Array:
-        """
-        Return observation for current player
-        
-        The player_id parameter is deprecated and will be removed in the future.
-        The method ignores player_id and always returns the observation for the current player.
-        """
         assert isinstance(state, State)
-        # We're ignoring player_id since the standalone _observe function doesn't use it
-        # and the base class observe() method already issues the deprecation warning
         return _observe(state)
     
+    def step_deterministic(self, state: State, action: Array) -> State:
+        return _decision_step(state, action)
+
+    def step_stochastic(self, state: State, action: Array) -> State:
+        # action is index into _STOCHASTIC_DICE_MAPPING (0-20)
+        dice_idx = action
+        dice = _STOCHASTIC_DICE_MAPPING[dice_idx]
+        
+        playable_dice: Array = _set_playable_dice(dice)
+        played_dice_num: Array = jnp.int32(0)
+        legal_action_mask: Array = _legal_action_mask(state._board, playable_dice, dice, played_dice_num)
+        
+        return state.replace(  # type: ignore
+            _dice=dice,
+            _playable_dice=playable_dice,
+            _played_dice_num=played_dice_num,
+            legal_action_mask=legal_action_mask,
+            _is_stochastic=jnp.array(False, dtype=jnp.bool_),
+        )
+
+    def chance_outcomes(self, state: State) -> Tuple[Array, Array]:
+        outcomes = jnp.arange(len(self.stochastic_action_probs), dtype=jnp.int32)
+        return outcomes, self.stochastic_action_probs
+
     def set_dice(self, state: State, dice: Array) -> State:
         """
         Use for setting the dice for testing or using external dice.
@@ -160,20 +169,7 @@ class Backgammon(core.Env):
         )
     
     def stochastic_step(self, state: State, action: Array) -> State:
-        """
-        Handle a stochastic step (dice roll) for programs that want to control dice rolls.
-        This is separate from the regular step function to maintain backward compatibility.
-        
-        Args:
-            state: Current game state
-            action: Index into _STOCHASTIC_DICE_MAPPING (0-20) representing the dice roll
-            
-        Returns:
-            New state with dice set and is_stochastic set to False
-        """
-        # Get the dice roll from the mapping
-        roll = _STOCHASTIC_DICE_MAPPING[action]
-        return self.set_dice(state, roll)
+        return self.step_stochastic(state, action)
 
     @property
     def id(self) -> core.EnvId:
@@ -220,11 +216,37 @@ def _step(state: State, action: Array, key) -> State:
     """
     Step when not terminated
     """
+    return jax.lax.cond(
+        state._is_stochastic,
+        lambda: _chance_step(state, action),
+        lambda: _decision_step(state, action, key),
+    )
+
+
+def _decision_step(state: State, action: Array) -> State:
     state = _update_by_action(state, action)
     return jax.lax.cond(
         _is_all_off(state._board),
         lambda: _winning_step(state),
-        lambda: _no_winning_step(state, action, key),
+        lambda: _no_winning_step(state, action),
+    )
+
+
+def _chance_step(state: State, action: Array) -> State:
+    # action is index into _STOCHASTIC_DICE_MAPPING (0-20)
+    dice_idx = action
+    dice = _STOCHASTIC_DICE_MAPPING[dice_idx]
+    
+    playable_dice: Array = _set_playable_dice(dice)
+    played_dice_num: Array = jnp.int32(0)
+    legal_action_mask: Array = _legal_action_mask(state._board, playable_dice, dice, played_dice_num)
+    
+    return state.replace(  # type: ignore
+        _dice=dice,
+        _playable_dice=playable_dice,
+        _played_dice_num=played_dice_num,
+        legal_action_mask=legal_action_mask,
+        _is_stochastic=jnp.array(False, dtype=jnp.bool_),
     )
 
 
@@ -404,7 +426,12 @@ def _observe_with_heuristics(state: State) -> Array:
     board: Array = state._board
 
     # Basic observation components
-    playable_dice_count_vec: Array = _to_playable_dice_count(state._playable_dice)
+    # Mask dice if stochastic
+    playable_dice_count_vec: Array = jax.lax.cond(
+        state._is_stochastic,
+        lambda: jnp.zeros(6, dtype=jnp.int32),
+        lambda: _to_playable_dice_count(state._playable_dice)
+    )
 
     # Heuristic features
     race_flag = _is_race(board)
@@ -491,8 +518,12 @@ def _observe_full(state: State) -> Array:
     scaled_board = board_f / 15.0
 
     # Scaled dice (6 elements) - divide by 4
-    dice_counts = _to_playable_dice_count(state._playable_dice)
-    scaled_dice = dice_counts.astype(jnp.float32) / 4.0
+    # Mask dice if stochastic
+    scaled_dice = jax.lax.cond(
+        state._is_stochastic,
+        lambda: jnp.zeros(6, dtype=jnp.float32),
+        lambda: _to_playable_dice_count(state._playable_dice).astype(jnp.float32) / 4.0
+    )
 
     # Heuristics as single array (4 elements) - reduces concatenations
     heuristics = jnp.array([
@@ -551,7 +582,7 @@ def _winning_step(
     return state.replace(rewards=reward)  # type: ignore
 
 
-def _no_winning_step(state: State, action: Array, key) -> State:
+def _no_winning_step(state: State, action: Array, key=None) -> State:
     """
     Step with no winner. Change turn if turn end condition is satisfied.
     """
@@ -624,7 +655,7 @@ def _is_turn_end(state: State) -> bool:
     return state._playable_dice.sum() == -4  # type: ignore
 
 
-def _change_turn(state: State, key) -> State:
+def _change_turn(state: State, key=None) -> State:
     """
     Change turn and return new state.
     """
@@ -632,10 +663,16 @@ def _change_turn(state: State, key) -> State:
     turn: Array = (state._turn + 1) % 2
     current_player: Array = (state.current_player + 1) % 2
     terminated: Array = state.terminated
-    dice: Array = _roll_dice(key)
-    playable_dice: Array = _set_playable_dice(dice)
-    played_dice_num: Array = jnp.int32(0)
-    legal_action_mask: Array = _legal_action_mask(board, playable_dice, dice, played_dice_num)
+    
+    # Do NOT roll dice here.
+    # Set dice to zeros (representing no dice rolled yet)
+    dice = jnp.zeros(2, dtype=jnp.int32)
+    playable_dice = jnp.full(4, -1, dtype=jnp.int32)
+    played_dice_num = jnp.int32(0)
+    
+    # For chance state, legal_action_mask should be all False (empty)
+    legal_action_mask = jnp.zeros(26 * 6, dtype=jnp.bool_)
+    
     return state.replace(  # type: ignore
         current_player=current_player,
         _board=board,

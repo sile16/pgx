@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
+from typing import Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -47,7 +47,7 @@ class State(core.State):
         return "pig"
 
 
-class Pig(core.Env):
+class Pig(core.StochasticEnv):
     def __init__(self):
         super().__init__()
         # 1-6 (1/6 probability each)
@@ -68,7 +68,7 @@ class Pig(core.Env):
 
     def _step(self, state: core.State, action: Array, key) -> State:
         assert isinstance(state, State)
-        return _step(state, action, key)
+        return super()._step(state, action, key)
 
     def _observe(self, state: core.State, player_id: Array) -> Array:
         assert isinstance(state, State)
@@ -80,15 +80,24 @@ class Pig(core.Env):
 
     @property
     def version(self) -> str:
-        return "v0"
+        return "v1"
 
     @property
     def num_players(self) -> int:
         return 2
 
+    def step_deterministic(self, state: State, action: Array) -> State:
+        return _step_deterministic(state, action)
+
+    def step_stochastic(self, state: State, action: Array) -> State:
+        return _step_stochastic(state, action)
+
+    def chance_outcomes(self, state: State) -> Tuple[Array, Array]:
+        return jnp.arange(6, dtype=jnp.int32), self.stochastic_action_probs
+
     def stochastic_step(self, state: State, action: Array) -> State:
-        # action: 0..5 (roll 1..6)
-        return _stochastic_step(state, action)
+        # Backward compatibility
+        return self.step_stochastic(state, action)
 
 
 def _init(rng: PRNGKey) -> State:
@@ -107,21 +116,83 @@ def _init(rng: PRNGKey) -> State:
     )  # type: ignore
 
 
-def _step(state: State, action: Array, key) -> State:
+def _step_deterministic(state: State, action: Array) -> State:
     # action: 0 = Roll, 1 = Hold
     
-    # Compute both outcomes
-    state_roll = _roll(state, key)
+    # 1. Roll Chosen -> Transition to Chance Node
+    state_roll = state.replace(
+        _is_stochastic=TRUE,
+        legal_action_mask=jnp.zeros(6, dtype=jnp.bool_),
+        # turn_total remains unchanged (will be updated in stochastic step)
+    )
+
+    # 2. Hold Chosen -> Deterministic Update
     state_hold = _hold(state)
     
-    # Select the correct outcome using jnp.where (mathematical multiplexing)
-    is_roll = (action == 0)
+    return jax.lax.cond(
+        action == 0,
+        lambda: state_roll,
+        lambda: state_hold
+    )
+
+
+def _step_stochastic(state: State, action: Array) -> State:
+    # action: 0..5 (roll 1..6)
+    roll = action + 1
+    is_one = (roll == 1)
     
-    # We use tree_map to apply jnp.where to all fields in the State dataclass
-    return jax.tree_util.tree_map(
-        lambda r, h: jnp.where(is_roll, r, h),
-        state_roll,
-        state_hold
+    new_turn_total = (state._turn_total + roll) * (1 - is_one)
+    next_player = (state.current_player + is_one) % 2
+    
+    mask = _get_legal_action_mask(new_turn_total)
+    
+    return state.replace(
+        current_player=next_player,
+        _turn_total=new_turn_total,
+        legal_action_mask=mask,
+        _is_stochastic=FALSE,
+        _last_roll=roll,
+        _prev_turn_total=state._turn_total 
+    )
+
+
+def _decision_step(state: State, action: Array, key) -> State:
+    # action: 0 = Roll, 1 = Hold
+    return jax.lax.cond(
+        action == 0,
+        lambda: _prepare_roll(state),
+        lambda: _hold(state)
+    )
+
+
+def _prepare_roll(state: State) -> State:
+    # Transition to stochastic
+    # legal actions for chance: 0..5 (1..6)
+    return state.replace(
+        _prev_turn_total=state._turn_total,
+        _is_stochastic=TRUE,
+        legal_action_mask=jnp.ones(6, dtype=jnp.bool_)
+    )
+
+
+def _chance_step(state: State, action: Array) -> State:
+    # action 0..5 -> roll 1..6
+    roll = action + 1
+    is_one = (roll == 1)
+    
+    # Use saved prev total (or current, as it hasn't changed)
+    prev_turn_total = state._turn_total
+    
+    new_turn_total = (prev_turn_total + roll) * (1 - is_one)
+    new_player = (state.current_player + is_one) % 2
+    
+    return state.replace(
+        current_player=new_player,
+        _turn_total=new_turn_total,
+        legal_action_mask=_get_legal_action_mask(new_turn_total),
+        _is_stochastic=FALSE,
+        _last_roll=roll,
+        _prev_turn_total=prev_turn_total
     )
 
 
@@ -137,30 +208,10 @@ def _get_legal_action_mask(turn_total: Array) -> Array:
 
 
 def _roll(state: State, key: PRNGKey) -> State:
-    roll = jax.random.randint(key, shape=(), minval=1, maxval=7)  # 1-6
-    is_one = (roll == 1)
-    
-    # Save previous state info
-    prev_turn_total = state._turn_total
-    
-    # If roll is 1: turn total becomes 0.
-    # If roll is 2-6: turn total becomes old + roll.
-    # Logic: (old + roll) * (1 - is_one)
-    new_turn_total = (state._turn_total + roll) * (1 - is_one)
-    
-    # If roll is 1: player flips.
-    # If roll is 2-6: player stays.
-    # Logic: (p + is_one) % 2
-    new_player = (state.current_player + is_one) % 2
-    
-    return state.replace(
-        current_player=new_player,
-        _turn_total=new_turn_total,
-        legal_action_mask=_get_legal_action_mask(new_turn_total),
-        _is_stochastic=TRUE,
-        _last_roll=roll,
-        _prev_turn_total=prev_turn_total
-    )
+    # Kept for potential internal usage, implemented via new primitives
+    state = _step_deterministic(state, jnp.int32(0))
+    roll = jax.random.randint(key, shape=(), minval=0, maxval=6)
+    return _step_stochastic(state, roll)
 
 
 def _hold(state: State) -> State:
@@ -196,42 +247,19 @@ def _hold(state: State) -> State:
         _prev_turn_total=jnp.int32(0)
     )
 
-def _stochastic_step(state: State, action: Array) -> State:
-    # Reverse the previous roll using saved info
-    prev_turn_total = state._prev_turn_total
-    last_roll = state._last_roll
-    
-    # If last roll was 1, player switched, so we need to revert player
-    is_last_one = (last_roll == 1)
-    # Revert player: (curr - is_one) % 2 ... or just (curr + is_one) % 2 since it toggles
-    prev_player = (state.current_player + is_last_one) % 2
-    
-    # Apply new roll
-    roll = action + 1
-    is_one = (roll == 1)
-    
-    new_turn_total = (prev_turn_total + roll) * (1 - is_one)
-    new_player = (prev_player + is_one) % 2
-    
-    return state.replace(
-        current_player=new_player,
-        _turn_total=new_turn_total,
-        legal_action_mask=_get_legal_action_mask(new_turn_total),
-        _is_stochastic=FALSE,
-        _last_roll=roll,
-        # _prev_turn_total remains the same as we are still relative to that same pre-roll state
-    )
-
-
 def _observe(state: State, player_id: Array) -> Array:
-    # [my_score, opp_score, turn_total] / 100.0
+    # [my_score, opp_score, turn_total, is_stochastic]
     scores = state._scores
     my_score = scores[player_id]
     opp_score = scores[1 - player_id]
     
-    obs = jnp.array([my_score, opp_score, state._turn_total], dtype=jnp.float32)
-    return obs / 100.0
-
+    obs = jnp.array([
+        my_score / 100.0, 
+        opp_score / 100.0, 
+        state._turn_total / 100.0, 
+        state._is_stochastic.astype(jnp.float32)
+    ], dtype=jnp.float32)
+    return obs
 
 def stochastic_action_to_str(action: Array) -> str:
     """
