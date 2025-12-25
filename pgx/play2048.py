@@ -99,6 +99,23 @@ class Play2048(core.StochasticEnv):
     def stochastic_step(self, state: State, action: Array) -> State:
         return self.step_stochastic(state, action)
 
+    def step_stochastic_random(self, state: State, key: PRNGKey) -> State:
+        """Optimized random spawn using categorical + bernoulli instead of choice."""
+        base = state._stochastic_board
+        k1, k2 = jax.random.split(key)
+
+        # Pick random empty position using categorical (faster than random.choice)
+        empty_mask = (base == 0)
+        logits = jnp.where(empty_mask, 0.0, -1e9)
+        pos = jax.random.categorical(k1, logits)
+
+        # Pick value: 90% chance of 2 (idx=0), 10% chance of 4 (idx=1)
+        is_four = jax.random.bernoulli(k2, 0.1)
+        value_idx = is_four.astype(jnp.int32)
+
+        action = 2 * pos + value_idx
+        return self.step_stochastic(state, action)
+
     @property
     def id(self) -> core.EnvId:
         return "2048"
@@ -195,8 +212,10 @@ def _legal_action_mask(board_2d):
 
 
 def _observe(state: State, player_id) -> Array:
+    board = state._board  # (16,)
+    # Use scatter for vectorized one-hot encoding
     obs = jnp.zeros((16, 32), dtype=jnp.bool_)
-    obs = jax.lax.fori_loop(0, 16, lambda i, obs: obs.at[i, state._board[i]].set(TRUE), obs)
+    obs = obs.at[jnp.arange(16), board].set(TRUE)
     obs = obs.at[:, 31].set(state._is_stochastic)
     return obs.reshape((4, 4, 32))
 
