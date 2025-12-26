@@ -300,17 +300,17 @@ class Env(abc.ABC):
 
 class StochasticEnv(Env):
     """
-    Interface for games separating Player Agency (Deterministic) from 
+    Interface for games separating Player Agency (Deterministic) from
     Nature Agency (Stochastic).
     """
 
     @abc.abstractmethod
-    def step_deterministic(self, state: State, action: Array) -> State:
+    def _step_deterministic(self, state: State, action: Array) -> State:
         """
-        PHASE 1: Player Decision.
+        PHASE 1: Player Decision (implementation).
         Applies the player's action.
-        
-        Returns: 
+
+        Returns:
             afterstate (State): A special intermediate state.
                 - MUST set internal flag `state._is_stochastic = True`.
                 - MUST zero out stochastic features in observation.
@@ -318,21 +318,39 @@ class StochasticEnv(Env):
         ...
 
     @abc.abstractmethod
-    def step_stochastic(self, state: State, action: Array) -> State:
+    def _step_stochastic(self, state: State, action: Array) -> State:
         """
-        PHASE 2: Nature Resolution.
+        PHASE 2: Nature Resolution (implementation).
         Applies a specific random outcome.
-        
+
         Args:
             state: The 'afterstate' from step_deterministic.
             action: The specific random event index or value.
-            
+
         Returns:
             next_state (State): The resulting state.
                 - MUST set `state._is_stochastic = False`.
                 - MUST populate stochastic features.
         """
         ...
+
+    def step_deterministic(self, state: State, action: Array) -> State:
+        """
+        PHASE 1: Player Decision.
+        Applies the player's action and updates observation.
+        """
+        state = self._step_deterministic(state, action)
+        observation = self.observe(state)
+        return state.replace(observation=observation)  # type: ignore
+
+    def step_stochastic(self, state: State, action: Array) -> State:
+        """
+        PHASE 2: Nature Resolution.
+        Applies a specific random outcome and updates observation.
+        """
+        state = self._step_stochastic(state, action)
+        observation = self.observe(state)
+        return state.replace(observation=observation)  # type: ignore
 
     @abc.abstractmethod
     def chance_outcomes(self, state: State) -> Tuple[Array, Array]:
@@ -351,25 +369,31 @@ class StochasticEnv(Env):
         outcome = jax.random.choice(key, outcomes, p=probs)
         return self.step_stochastic(state, outcome)
 
+    def _step_stochastic_random(self, state: State, key: PRNGKey) -> State:
+        """Internal helper without observation update (used by _step)."""
+        outcomes, probs = self.chance_outcomes(state)
+        outcome = jax.random.choice(key, outcomes, p=probs)
+        return self._step_stochastic(state, outcome)
+
     def _step(self, state: State, action: Array, key: PRNGKey) -> State:
         """
         Combines Deterministic -> Stochastic phases for standard evaluation.
+        Note: observation is updated by the parent step() method.
         """
-        # If the state is already a chance node (from external manipulation), resolve it first?
         # Standard flow: State(P) -> action -> State(C) -> random -> State(P')
-        
+
         # 1. Deterministic Step (Player Action)
-        state = self.step_deterministic(state, action)
-        
+        state = self._step_deterministic(state, action)
+
         # 2. Stochastic Step (Nature), if applicable
         # Some actions might lead to immediate termination or next player without chance
         # e.g., "Hold" in Pig
         state = jax.lax.cond(
             state._is_stochastic,
-            lambda: self.step_stochastic_random(state, key),
+            lambda: self._step_stochastic_random(state, key),
             lambda: state
         )
-        
+
         return state
 
 

@@ -86,10 +86,10 @@ class Pig(core.StochasticEnv):
     def num_players(self) -> int:
         return 2
 
-    def step_deterministic(self, state: State, action: Array) -> State:
+    def _step_deterministic(self, state: State, action: Array) -> State:
         return _step_deterministic(state, action)
 
-    def step_stochastic(self, state: State, action: Array) -> State:
+    def _step_stochastic(self, state: State, action: Array) -> State:
         return _step_stochastic(state, action)
 
     def chance_outcomes(self, state: State) -> Tuple[Array, Array]:

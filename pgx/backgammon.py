@@ -124,18 +124,18 @@ class Backgammon(core.StochasticEnv):
         assert isinstance(state, State)
         return _observe(state)
     
-    def step_deterministic(self, state: State, action: Array) -> State:
+    def _step_deterministic(self, state: State, action: Array) -> State:
         return _decision_step(state, action)
 
-    def step_stochastic(self, state: State, action: Array) -> State:
+    def _step_stochastic(self, state: State, action: Array) -> State:
         # action is index into _STOCHASTIC_DICE_MAPPING (0-20)
         dice_idx = action
         dice = _STOCHASTIC_DICE_MAPPING[dice_idx]
-        
+
         playable_dice: Array = _set_playable_dice(dice)
         played_dice_num: Array = jnp.int32(0)
         legal_action_mask: Array = _legal_action_mask(state._board, playable_dice, dice, played_dice_num)
-        
+
         return state.replace(  # type: ignore
             _dice=dice,
             _playable_dice=playable_dice,
@@ -148,11 +148,8 @@ class Backgammon(core.StochasticEnv):
         outcomes = jnp.arange(len(self.stochastic_action_probs), dtype=jnp.int32)
         return outcomes, self.stochastic_action_probs
 
-    def set_dice(self, state: State, dice: Array) -> State:
-        """
-        Use for setting the dice for testing or using external dice.
-        dice is a 2 digit array 0-5, 0 for 1, 1 for 2, etc.
-        """
+    def _set_dice(self, state: State, dice: Array) -> State:
+        """Internal: set dice without observation update."""
         playable_dice: Array = _set_playable_dice(dice)
         played_dice_num: Array = jnp.int32(0)
         legal_action_mask: Array = _legal_action_mask(state._board, playable_dice, dice, played_dice_num)
@@ -167,7 +164,17 @@ class Backgammon(core.StochasticEnv):
             legal_action_mask=legal_action_mask,
             _is_stochastic=jnp.array(False, dtype=jnp.bool_),
         )
-    
+
+    def set_dice(self, state: State, dice: Array) -> State:
+        """
+        Use for setting the dice for testing or using external dice.
+        dice is a 2 digit array 0-5, 0 for 1, 1 for 2, etc.
+        Updates observation.
+        """
+        state = self._set_dice(state, dice)
+        observation = self._observe(state)
+        return state.replace(observation=observation)  # type: ignore
+
     def stochastic_step(self, state: State, action: Array) -> State:
         return self.step_stochastic(state, action)
 

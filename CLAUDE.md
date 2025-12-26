@@ -124,3 +124,21 @@ python -m pytest tests/test_backgammon.py -v
 - Apple M1 (CPU)
   - Optimal batch size: 50 (46.3 games/sec)
   - Use `JAX_PLATFORMS=cpu` to run on CPU
+
+## Stochastic Games Benchmark
+
+Benchmark of `step_deterministic` and `step_stochastic` for all StochasticEnv games.
+Measured on RTX 4090 with batch_size=4000, ~30s per measurement after JIT warmup.
+
+| Game | step_deterministic (steps/sec) | step_stochastic (steps/sec) |
+|------|-------------------------------|----------------------------|
+| pig | 92,684 | 252,965 |
+| 2048 | 24,255 | 76,551 |
+| shut_the_box | 271,346 | 71,824 |
+| backgammon | 5,381 | 5,677 |
+
+**Notes:**
+- These are baseline measurements after fixing the observation update bug (2024-12-26)
+- Pig and Shut the Box are lightweight games with fast step functions
+- 2048 has more complex state transitions (sliding/merging tiles)
+- Backgammon is the most complex due to legal move computation

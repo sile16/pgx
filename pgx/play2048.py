@@ -75,10 +75,10 @@ class Play2048(core.StochasticEnv):
         assert isinstance(state, State)
         return _observe(state, player_id)
 
-    def step_deterministic(self, state: State, action: Array) -> State:
+    def _step_deterministic(self, state: State, action: Array) -> State:
         return _step_deterministic(state, action)
 
-    def step_stochastic(self, state: State, action: Array) -> State:
+    def _step_stochastic(self, state: State, action: Array) -> State:
         return _step_stochastic(state, action)
 
     def chance_outcomes(self, state: State) -> Tuple[Array, Array]:
@@ -99,8 +99,8 @@ class Play2048(core.StochasticEnv):
     def stochastic_step(self, state: State, action: Array) -> State:
         return self.step_stochastic(state, action)
 
-    def step_stochastic_random(self, state: State, key: PRNGKey) -> State:
-        """Optimized random spawn using categorical + bernoulli instead of choice."""
+    def _step_stochastic_random(self, state: State, key: PRNGKey) -> State:
+        """Optimized random spawn using categorical + bernoulli (internal, no obs update)."""
         base = state._stochastic_board
         k1, k2 = jax.random.split(key)
 
@@ -114,7 +114,13 @@ class Play2048(core.StochasticEnv):
         value_idx = is_four.astype(jnp.int32)
 
         action = 2 * pos + value_idx
-        return self.step_stochastic(state, action)
+        return self._step_stochastic(state, action)
+
+    def step_stochastic_random(self, state: State, key: PRNGKey) -> State:
+        """Optimized random spawn using categorical + bernoulli instead of choice."""
+        state = self._step_stochastic_random(state, key)
+        observation = self._observe(state, state.current_player)
+        return state.replace(observation=observation)  # type: ignore
 
     @property
     def id(self) -> core.EnvId:

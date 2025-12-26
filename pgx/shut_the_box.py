@@ -81,22 +81,22 @@ class ShutTheBox(core.StochasticEnv):
     def num_actions(self) -> int:
         return 512
 
-    def step_deterministic(self, state: State, action: Array) -> State:
+    def _step_deterministic(self, state: State, action: Array) -> State:
         return _step_deterministic(state, action)
 
-    def step_stochastic(self, state: State, action: Array) -> State:
+    def _step_stochastic(self, state: State, action: Array) -> State:
         # Calculate dice from action index
         d1 = action // 6
         d2 = action % 6
         dice = jnp.stack([d1, d2])
-        return self.set_dice(state, dice)
+        return self._set_dice(state, dice)
 
     def chance_outcomes(self, state: State) -> Tuple[Array, Array]:
         outcomes = jnp.arange(36, dtype=jnp.int32)
         return outcomes, self.stochastic_action_probs
 
-    def set_dice(self, state: State, dice: Array) -> State:
-        """Use for testing or setting dice explicitly."""
+    def _set_dice(self, state: State, dice: Array) -> State:
+        """Internal: set dice without observation update."""
         turn_sum = jnp.sum(dice + 1)
         legal_mask = _get_legal_action_mask(state._board, turn_sum)
         terminated = ~legal_mask.any()
@@ -109,7 +109,13 @@ class ShutTheBox(core.StochasticEnv):
             terminated=terminated,
             _is_stochastic=FALSE  # Dice set, no longer stochastic
         )
-    
+
+    def set_dice(self, state: State, dice: Array) -> State:
+        """Use for testing or setting dice explicitly. Updates observation."""
+        state = self._set_dice(state, dice)
+        observation = self._observe(state, state.current_player)
+        return state.replace(observation=observation)
+
     def stochastic_step(self, state: State, action: Array) -> State:
         return self.step_stochastic(state, action)
 
