@@ -54,7 +54,7 @@ except ImportError:
 # =============================================================================
 
 class DeviceMonitor:
-    """Monitor GPU/TPU utilization during benchmarks."""
+    """Monitor GPU utilization during benchmarks. GPU only - TPU monitoring skipped."""
 
     def __init__(self, interval: float = 5.0):
         self.interval = interval
@@ -66,11 +66,9 @@ class DeviceMonitor:
         self._detect_device()
 
     def _detect_device(self):
-        """Detect available accelerator."""
-        device = jax.devices()[0]
-        platform = device.platform
-
-        if platform == 'gpu' and HAS_GPUTIL:
+        """Detect GPU using GPUtil only (no JAX calls to avoid TPU conflicts)."""
+        # Only check for GPU via GPUtil - avoids JAX device calls that can lock TPU
+        if HAS_GPUTIL:
             try:
                 gpus = GPUtil.getGPUs()
                 if gpus:
@@ -80,13 +78,9 @@ class DeviceMonitor:
             except:
                 pass
 
-        if platform == 'tpu':
-            self._device_type = 'tpu'
-            self._device_name = device.device_kind
-            return
-
-        self._device_type = platform
-        self._device_name = device.device_kind
+        # No GPU found or GPUtil not available - skip monitoring
+        self._device_type = 'other'
+        self._device_name = 'unknown'
 
     def _sample_gpu(self) -> dict:
         """Sample GPU metrics."""
@@ -104,31 +98,13 @@ class DeviceMonitor:
             pass
         return None
 
-    def _sample_tpu(self) -> dict:
-        """Sample TPU metrics (limited info available)."""
-        # TPU monitoring requires tensorflow profiler which is complex
-        # For now, just return basic info
-        try:
-            return {
-                'load': None,  # TPU load not easily accessible
-                'memory_used': None,
-                'memory_total': None,
-                'memory_util': None,
-            }
-        except:
-            pass
-        return None
-
     def _sample(self) -> dict:
         """Take a sample of device metrics."""
-        timestamp = time.time()
+        if self._device_type != 'gpu':
+            return None
 
-        if self._device_type == 'gpu':
-            metrics = self._sample_gpu()
-        elif self._device_type == 'tpu':
-            metrics = self._sample_tpu()
-        else:
-            metrics = None
+        timestamp = time.time()
+        metrics = self._sample_gpu()
 
         if metrics:
             metrics['timestamp'] = timestamp
@@ -146,7 +122,7 @@ class DeviceMonitor:
 
     def start(self):
         """Start monitoring in background."""
-        if self._device_type not in ('gpu', 'tpu'):
+        if self._device_type != 'gpu':
             return self
 
         from threading import Thread, Event
