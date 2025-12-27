@@ -35,6 +35,185 @@ warnings.filterwarnings("ignore", message=".*GPU interconnect.*")
 import jax
 import jax.numpy as jnp
 
+# Optional monitoring imports
+try:
+    import GPUtil
+    HAS_GPUTIL = True
+except ImportError:
+    HAS_GPUTIL = False
+
+try:
+    import psutil
+    HAS_PSUTIL = True
+except ImportError:
+    HAS_PSUTIL = False
+
+
+# =============================================================================
+# Device Monitoring
+# =============================================================================
+
+class DeviceMonitor:
+    """Monitor GPU/TPU utilization during benchmarks."""
+
+    def __init__(self, interval: float = 5.0):
+        self.interval = interval
+        self._running = False
+        self._thread = None
+        self._samples = []
+        self._device_type = None
+        self._device_name = None
+        self._detect_device()
+
+    def _detect_device(self):
+        """Detect available accelerator."""
+        device = jax.devices()[0]
+        platform = device.platform
+
+        if platform == 'gpu' and HAS_GPUTIL:
+            try:
+                gpus = GPUtil.getGPUs()
+                if gpus:
+                    self._device_type = 'gpu'
+                    self._device_name = gpus[0].name
+                    return
+            except:
+                pass
+
+        if platform == 'tpu':
+            self._device_type = 'tpu'
+            self._device_name = device.device_kind
+            return
+
+        self._device_type = platform
+        self._device_name = device.device_kind
+
+    def _sample_gpu(self) -> dict:
+        """Sample GPU metrics."""
+        try:
+            gpus = GPUtil.getGPUs()
+            if gpus:
+                gpu = gpus[0]
+                return {
+                    'load': gpu.load * 100,
+                    'memory_used': gpu.memoryUsed,
+                    'memory_total': gpu.memoryTotal,
+                    'memory_util': gpu.memoryUtil * 100,
+                }
+        except:
+            pass
+        return None
+
+    def _sample_tpu(self) -> dict:
+        """Sample TPU metrics (limited info available)."""
+        # TPU monitoring requires tensorflow profiler which is complex
+        # For now, just return basic info
+        try:
+            return {
+                'load': None,  # TPU load not easily accessible
+                'memory_used': None,
+                'memory_total': None,
+                'memory_util': None,
+            }
+        except:
+            pass
+        return None
+
+    def _sample(self) -> dict:
+        """Take a sample of device metrics."""
+        timestamp = time.time()
+
+        if self._device_type == 'gpu':
+            metrics = self._sample_gpu()
+        elif self._device_type == 'tpu':
+            metrics = self._sample_tpu()
+        else:
+            metrics = None
+
+        if metrics:
+            metrics['timestamp'] = timestamp
+        return metrics
+
+    def _monitor_loop(self):
+        """Background monitoring loop."""
+        from threading import Event
+        stop_event = self._stop_event
+
+        while not stop_event.wait(self.interval):
+            sample = self._sample()
+            if sample:
+                self._samples.append(sample)
+
+    def start(self):
+        """Start monitoring in background."""
+        if self._device_type not in ('gpu', 'tpu'):
+            return self
+
+        from threading import Thread, Event
+        self._samples = []
+        self._stop_event = Event()
+        self._running = True
+        self._thread = Thread(target=self._monitor_loop, daemon=True)
+        self._thread.start()
+        return self
+
+    def stop(self) -> dict:
+        """Stop monitoring and return statistics."""
+        if not self._running:
+            return self.get_stats()
+
+        self._stop_event.set()
+        self._running = False
+        if self._thread:
+            self._thread.join(timeout=1.0)
+
+        return self.get_stats()
+
+    def reset(self):
+        """Reset samples for a new measurement period."""
+        self._samples = []
+
+    def get_stats(self) -> dict:
+        """Calculate statistics from collected samples."""
+        if not self._samples:
+            return {
+                'device_type': self._device_type,
+                'device_name': self._device_name,
+                'num_samples': 0,
+                'avg_load': None,
+                'max_load': None,
+                'avg_memory_util': None,
+                'max_memory_util': None,
+            }
+
+        loads = [s['load'] for s in self._samples if s.get('load') is not None]
+        mem_utils = [s['memory_util'] for s in self._samples if s.get('memory_util') is not None]
+
+        return {
+            'device_type': self._device_type,
+            'device_name': self._device_name,
+            'num_samples': len(self._samples),
+            'avg_load': sum(loads) / len(loads) if loads else None,
+            'max_load': max(loads) if loads else None,
+            'avg_memory_util': sum(mem_utils) / len(mem_utils) if mem_utils else None,
+            'max_memory_util': max(mem_utils) if mem_utils else None,
+        }
+
+    def format_stats(self) -> str:
+        """Format stats as a string for display."""
+        stats = self.get_stats()
+
+        if stats['num_samples'] == 0:
+            return ""
+
+        parts = []
+        if stats['avg_load'] is not None:
+            parts.append(f"GPU: avg {stats['avg_load']:.1f}%, max {stats['max_load']:.1f}%")
+        if stats['avg_memory_util'] is not None:
+            parts.append(f"Mem: avg {stats['avg_memory_util']:.1f}%, max {stats['max_memory_util']:.1f}%")
+
+        return " | ".join(parts) if parts else ""
+
 
 class BenchmarkResult(NamedTuple):
     """Results from a benchmark run."""
@@ -567,39 +746,56 @@ def main():
 
     benchmark_results: List[BenchmarkResult] = []
 
+    # Initialize device monitor
+    monitor = DeviceMonitor(interval=5.0)
+    monitor.start()
+
     print("\n2048 Variants:")
     print("-" * 60)
     variants_2048 = get_2048_variants()
     for name, (EnvClass, StateClass) in variants_2048.items():
-        print(f"  Benchmarking 2048 {name}...", end=" ", flush=True)
+        print(f"  Benchmarking 2048 {name}...")
+        monitor.reset()
         result = benchmark_2048_variant(
             name, EnvClass, StateClass,
             args.batch_size, args.num_batches, args.max_steps, args.warmup_batches
         )
         benchmark_results.append(result)
-        print(f"{result.games_per_second:,.1f} games/sec, {result.steps_per_second:,.1f} steps/sec")
+        gpu_stats = monitor.format_stats()
+        print(f"    -> {result.games_per_second:,.1f} games/sec, {result.steps_per_second:,.1f} steps/sec")
+        if gpu_stats:
+            print(f"    -> {gpu_stats}")
         results["benchmarks"][f"2048_{name}"] = {
             "games_per_second": result.games_per_second,
             "steps_per_second": result.steps_per_second,
             "elapsed_time": result.elapsed_time,
+            "gpu_stats": monitor.get_stats(),
         }
 
     print("\nBackgammon Variants:")
     print("-" * 60)
     variants_bg = get_backgammon_variants()
     for name, (EnvClass, StateClass) in variants_bg.items():
-        print(f"  Benchmarking Backgammon {name}...", end=" ", flush=True)
+        print(f"  Benchmarking Backgammon {name}...")
+        monitor.reset()
         result = benchmark_backgammon_variant(
             name, EnvClass, StateClass,
             args.batch_size, args.bg_batches, args.max_steps, args.warmup_batches
         )
         benchmark_results.append(result)
-        print(f"{result.games_per_second:,.1f} games/sec, {result.steps_per_second:,.1f} steps/sec")
+        gpu_stats = monitor.format_stats()
+        print(f"    -> {result.games_per_second:,.1f} games/sec, {result.steps_per_second:,.1f} steps/sec")
+        if gpu_stats:
+            print(f"    -> {gpu_stats}")
         results["benchmarks"][f"backgammon_{name}"] = {
             "games_per_second": result.games_per_second,
             "steps_per_second": result.steps_per_second,
             "elapsed_time": result.elapsed_time,
+            "gpu_stats": monitor.get_stats(),
         }
+
+    # Stop monitoring
+    monitor.stop()
 
     # ==========================================================================
     # Summary
@@ -608,23 +804,53 @@ def main():
     print("SUMMARY")
     print("=" * 80)
 
+    # Check if we have GPU stats
+    has_gpu_stats = any(
+        results["benchmarks"].get(k, {}).get("gpu_stats", {}).get("avg_load") is not None
+        for k in results["benchmarks"]
+    )
+
     print("\n2048 Performance Comparison:")
-    print(f"{'Variant':<20} {'Games/sec':>15} {'Steps/sec':>15} {'Speedup':>10}")
-    print("-" * 60)
+    if has_gpu_stats:
+        print(f"{'Variant':<15} {'Games/sec':>12} {'Steps/sec':>12} {'Speedup':>8} {'GPU%':>8} {'Mem%':>8}")
+        print("-" * 75)
+    else:
+        print(f"{'Variant':<20} {'Games/sec':>15} {'Steps/sec':>15} {'Speedup':>10}")
+        print("-" * 60)
     baseline_2048 = results["benchmarks"]["2048_original"]["games_per_second"]
     for name in variants_2048.keys():
         data = results["benchmarks"][f"2048_{name}"]
         speedup = data["games_per_second"] / baseline_2048
-        print(f"{name:<20} {data['games_per_second']:>15,.1f} {data['steps_per_second']:>15,.1f} {speedup:>9.2f}x")
+        if has_gpu_stats:
+            gpu_stats = data.get("gpu_stats", {})
+            avg_load = gpu_stats.get("avg_load")
+            avg_mem = gpu_stats.get("avg_memory_util")
+            load_str = f"{avg_load:.0f}" if avg_load is not None else "-"
+            mem_str = f"{avg_mem:.0f}" if avg_mem is not None else "-"
+            print(f"{name:<15} {data['games_per_second']:>12,.1f} {data['steps_per_second']:>12,.1f} {speedup:>7.2f}x {load_str:>8} {mem_str:>8}")
+        else:
+            print(f"{name:<20} {data['games_per_second']:>15,.1f} {data['steps_per_second']:>15,.1f} {speedup:>9.2f}x")
 
     print("\nBackgammon Performance Comparison:")
-    print(f"{'Variant':<20} {'Games/sec':>15} {'Steps/sec':>15} {'Speedup':>10}")
-    print("-" * 60)
+    if has_gpu_stats:
+        print(f"{'Variant':<15} {'Games/sec':>12} {'Steps/sec':>12} {'Speedup':>8} {'GPU%':>8} {'Mem%':>8}")
+        print("-" * 75)
+    else:
+        print(f"{'Variant':<20} {'Games/sec':>15} {'Steps/sec':>15} {'Speedup':>10}")
+        print("-" * 60)
     baseline_bg = results["benchmarks"]["backgammon_original"]["games_per_second"]
     for name in variants_bg.keys():
         data = results["benchmarks"][f"backgammon_{name}"]
         speedup = data["games_per_second"] / baseline_bg
-        print(f"{name:<20} {data['games_per_second']:>15,.1f} {data['steps_per_second']:>15,.1f} {speedup:>9.2f}x")
+        if has_gpu_stats:
+            gpu_stats = data.get("gpu_stats", {})
+            avg_load = gpu_stats.get("avg_load")
+            avg_mem = gpu_stats.get("avg_memory_util")
+            load_str = f"{avg_load:.0f}" if avg_load is not None else "-"
+            mem_str = f"{avg_mem:.0f}" if avg_mem is not None else "-"
+            print(f"{name:<15} {data['games_per_second']:>12,.1f} {data['steps_per_second']:>12,.1f} {speedup:>7.2f}x {load_str:>8} {mem_str:>8}")
+        else:
+            print(f"{name:<20} {data['games_per_second']:>15,.1f} {data['steps_per_second']:>15,.1f} {speedup:>9.2f}x")
 
     print("=" * 80)
 
