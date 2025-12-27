@@ -13,12 +13,16 @@
 # limitations under the License.
 
 """
-2048 variant with ALL optimizations combined.
+2048 variant with no-rotation optimization.
 
 Optimizations:
-1. Branchless slide/merge - jnp.where instead of jax.lax.cond
-2. No rotations - direct indexing with flips/transposes
-3. Parallel direction computation - compute all 4 directions, then select
+1. No rotations - use flip/transpose instead of rot90 (avoids memory shuffles)
+2. Parallel direction computation - compute all 4 directions, then select
+
+Note: Branchless slide/merge with argsort is NOT used here because
+argsort is slow on GPU for small arrays. When computing all 4 directions,
+the overhead of 48 argsort calls (4 dirs × 4 rows × 3 slides) is too high.
+The conditional approach with jax.lax.cond compiles efficiently.
 """
 
 from typing import Optional, Tuple
@@ -141,58 +145,68 @@ def _init(rng: PRNGKey) -> State:
 
 
 # =============================================================================
-# BRANCHLESS SLIDE AND MERGE
+# SLIDE AND MERGE (using conditionals - faster than argsort for small arrays)
 # =============================================================================
 
-def _slide_left_branchless(line):
-    """
-    Branchless slide: compact non-zero elements to the left using argsort.
-    Example: [0, 2, 0, 4] -> [2, 4, 0, 0]
-    """
-    is_zero = (line == 0).astype(jnp.int32)
-    indices = jnp.argsort(is_zero, stable=True)
-    return line[indices]
+def _slide_left(line):
+    """Slide left using conditionals (faster than argsort on GPU for 4 elements)."""
+    line = jax.lax.cond(
+        (line[2] == 0),
+        lambda: line.at[2:].set(jnp.roll(line[2:], -1)),
+        lambda: line,
+    )
+    line = jax.lax.cond(
+        (line[1] == 0),
+        lambda: line.at[1:].set(jnp.roll(line[1:], -1)),
+        lambda: line,
+    )
+    line = jax.lax.cond(
+        (line[0] == 0),
+        lambda: jnp.roll(line, -1),
+        lambda: line,
+    )
+    return line
 
 
-def _merge_branchless(line):
-    """
-    Branchless merge: merge adjacent equal non-zero tiles using jnp.where.
-    Example: [2, 2, 4, 4] -> [3, 0, 5, 0] (values are log2)
-    """
-    # Check position 0-1
-    can_merge_01 = (line[0] != 0) & (line[0] == line[1])
-    new_0 = jnp.where(can_merge_01, line[0] + 1, line[0])
-    new_1 = jnp.where(can_merge_01, ZERO, line[1])
-    reward_01 = jnp.where(can_merge_01, 2 ** (line[0] + 1), ZERO)
+def _merge(line):
+    """Merge adjacent equal tiles."""
+    line, reward = jax.lax.cond(
+        (line[0] != 0) & (line[0] == line[1]),
+        lambda: (
+            line.at[0].set(line[0] + 1).at[1].set(ZERO),
+            2 ** (line[0] + 1),
+        ),
+        lambda: (line, ZERO),
+    )
+    line, reward = jax.lax.cond(
+        (line[1] != 0) & (line[1] == line[2]),
+        lambda: (
+            line.at[1].set(line[1] + 1).at[2].set(ZERO),
+            reward + 2 ** (line[1] + 1),
+        ),
+        lambda: (line, reward),
+    )
+    line, reward = jax.lax.cond(
+        (line[2] != 0) & (line[2] == line[3]),
+        lambda: (
+            line.at[2].set(line[2] + 1).at[3].set(ZERO),
+            reward + 2 ** (line[2] + 1),
+        ),
+        lambda: (line, reward),
+    )
+    return line, reward
 
-    # Check position 1-2
-    can_merge_12 = (new_1 != 0) & (new_1 == line[2])
-    new_1 = jnp.where(can_merge_12, new_1 + 1, new_1)
-    new_2 = jnp.where(can_merge_12, ZERO, line[2])
-    reward_12 = jnp.where(can_merge_12, 2 ** (line[2] + 1), ZERO)
 
-    # Check position 2-3
-    can_merge_23 = (new_2 != 0) & (new_2 == line[3])
-    new_2 = jnp.where(can_merge_23, new_2 + 1, new_2)
-    new_3 = jnp.where(can_merge_23, ZERO, line[3])
-    reward_23 = jnp.where(can_merge_23, 2 ** (line[3] + 1), ZERO)
-
-    result = jnp.array([new_0, new_1, new_2, new_3], dtype=line.dtype)
-    total_reward = reward_01 + reward_12 + reward_23
-
-    return result, total_reward
-
-
-def _slide_and_merge_branchless(line):
-    """Branchless slide and merge: slide -> merge -> slide"""
-    line = _slide_left_branchless(line)
-    line, reward = _merge_branchless(line)
-    line = _slide_left_branchless(line)
+def _slide_and_merge(line):
+    """Slide and merge: slide -> merge -> slide"""
+    line = _slide_left(line)
+    line, reward = _merge(line)
+    line = _slide_left(line)
     return line, reward
 
 
 # =============================================================================
-# NO-ROTATION STEP (with branchless operations)
+# NO-ROTATION STEP
 # =============================================================================
 
 def _step_deterministic(state: State, action: Array) -> State:
@@ -201,27 +215,26 @@ def _step_deterministic(state: State, action: Array) -> State:
 
     Optimizations:
     1. Compute all 4 directions in parallel
-    2. Use flip/transpose instead of rot90
-    3. Branchless slide/merge
+    2. Use flip/transpose instead of rot90 (avoids memory shuffles)
     """
     board_2d = state._board.reshape((4, 4))
 
     # LEFT: slide rows left
-    left_result, left_reward = jax.vmap(_slide_and_merge_branchless)(board_2d)
+    left_result, left_reward = jax.vmap(_slide_and_merge)(board_2d)
 
     # RIGHT: reverse rows, slide left, reverse back
     right_input = board_2d[:, ::-1]
-    right_temp, right_reward = jax.vmap(_slide_and_merge_branchless)(right_input)
+    right_temp, right_reward = jax.vmap(_slide_and_merge)(right_input)
     right_result = right_temp[:, ::-1]
 
     # UP: transpose, slide rows left, transpose back
     up_input = board_2d.T
-    up_temp, up_reward = jax.vmap(_slide_and_merge_branchless)(up_input)
+    up_temp, up_reward = jax.vmap(_slide_and_merge)(up_input)
     up_result = up_temp.T
 
     # DOWN: transpose, reverse, slide, reverse, transpose
     down_input = board_2d.T[:, ::-1]
-    down_temp, down_reward = jax.vmap(_slide_and_merge_branchless)(down_input)
+    down_temp, down_reward = jax.vmap(_slide_and_merge)(down_input)
     down_result = down_temp[:, ::-1].T
 
     # Stack all results and rewards
