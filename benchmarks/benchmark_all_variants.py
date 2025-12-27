@@ -29,8 +29,7 @@ from datetime import datetime
 from typing import NamedTuple, Dict, List, Any
 
 # Suppress CUDA warnings for cleaner output
-if "JAX_PLATFORMS" not in os.environ:
-    os.environ["JAX_PLATFORMS"] = "cpu"  # Default to CPU for validation
+# Note: JAX will auto-detect GPU/TPU. Set JAX_PLATFORMS=cpu to force CPU.
 warnings.filterwarnings("ignore", message=".*GPU interconnect.*")
 
 import jax
@@ -474,7 +473,8 @@ def benchmark_backgammon_variant(
 def main():
     parser = argparse.ArgumentParser(description="Benchmark all game variants")
     parser.add_argument("--batch-size", type=int, default=100, help="Batch size for benchmarks")
-    parser.add_argument("--num-batches", type=int, default=3, help="Number of batches to run")
+    parser.add_argument("--num-batches", type=int, default=3, help="Number of batches to run for 2048")
+    parser.add_argument("--bg-batches", type=int, default=None, help="Number of batches for backgammon (defaults to num-batches)")
     parser.add_argument("--max-steps", type=int, default=5000, help="Maximum steps per game")
     parser.add_argument("--warmup-batches", type=int, default=2, help="Number of warmup batches")
     parser.add_argument("--validate-only", action="store_true", help="Only run validation, skip benchmarks")
@@ -487,6 +487,10 @@ def main():
         args.batch_size = 50
         args.num_batches = 2
 
+    # Default backgammon batches to num_batches if not specified
+    if args.bg_batches is None:
+        args.bg_batches = args.num_batches
+
     print("=" * 80)
     print("PGX Variant Benchmark")
     print("=" * 80)
@@ -494,7 +498,8 @@ def main():
     print(f"Device(s): {get_device_info()}")
     print(f"JAX version: {jax.__version__}")
     print(f"Batch size: {args.batch_size}")
-    print(f"Num batches: {args.num_batches}")
+    print(f"Num batches (2048): {args.num_batches}")
+    print(f"Num batches (backgammon): {args.bg_batches}")
     print("=" * 80)
     print()
 
@@ -586,7 +591,7 @@ def main():
         print(f"  Benchmarking Backgammon {name}...", end=" ", flush=True)
         result = benchmark_backgammon_variant(
             name, EnvClass, StateClass,
-            args.batch_size, args.num_batches, args.max_steps, args.warmup_batches
+            args.batch_size, args.bg_batches, args.max_steps, args.warmup_batches
         )
         benchmark_results.append(result)
         print(f"{result.games_per_second:,.1f} games/sec, {result.steps_per_second:,.1f} steps/sec")
