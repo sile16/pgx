@@ -439,25 +439,28 @@ def make(env_id: EnvId):  # noqa: C901
     # NOTE: BridgeBidding environment requires the domain knowledge of bridge
     # So we forbid users to load the bridge environment by `make("bridge_bidding")`.
     if env_id == "2048":
-        from pgx.play2048 import Play2048
+        # Use optimized variant (1.5x faster with no-rotation optimization)
+        from pgx.play2048_v2_all import Play2048V2All
 
-        return Play2048()
+        return Play2048V2All()
     elif env_id == "animal_shogi":
         from pgx.animal_shogi import AnimalShogi
 
         return AnimalShogi()
     elif env_id == "backgammon":
-        from pgx.backgammon import Backgammon
+        # Use optimized variant (2x faster with branchless + fast obs)
+        from pgx.backgammon_v2_all import BackgammonV2All
 
-        return Backgammon()
+        return BackgammonV2All()
     elif env_id == "chess":
         from pgx.chess import Chess
 
         return Chess()
     elif env_id == "connect_four":
-        from pgx.connect_four import ConnectFour
+        # Use optimized variant (1.8x faster with height tracking)
+        from pgx.connect_four_v2_bitboard import ConnectFourV2Bitboard
 
-        return ConnectFour()
+        return ConnectFourV2Bitboard()
     elif env_id == "gardner_chess":
         from pgx.gardner_chess import GardnerChess
 
