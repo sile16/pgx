@@ -297,3 +297,123 @@ class TestFullGameSimulation:
                 key, k1 = jax.random.split(key)
                 state_orig = env_orig.step(state_orig, action, k1)
                 state_opt = env_opt.step(state_opt, action, k1)
+
+
+# =============================================================================
+# Backgammon Win Score Tests (Single, Gammon, Backgammon)
+# =============================================================================
+
+class TestBackgammonWinScores:
+    """Test that all Backgammon variants compute identical win scores."""
+
+    @pytest.fixture
+    def envs_bg(self):
+        """Load all Backgammon environment variants."""
+        from pgx.backgammon import Backgammon
+        from pgx.backgammon_v2_fast_obs import BackgammonV2FastObs
+        from pgx.backgammon_v2_branchless import BackgammonV2Branchless
+        from pgx.backgammon_v2_all import BackgammonV2All
+
+        return {
+            "original": Backgammon(short_game=True),
+            "fast_obs": BackgammonV2FastObs(short_game=True),
+            "branchless": BackgammonV2Branchless(short_game=True),
+            "all": BackgammonV2All(short_game=True),
+        }
+
+    def test_calc_win_score_identical(self):
+        """Test that _calc_win_score is identical across variants."""
+        from pgx.backgammon import _calc_win_score as original_calc
+        from pgx.backgammon_v2_all import _calc_win_score as opt_calc
+
+        # Backgammon win (3 points): opponent has pieces on bar or winner's home
+        backgammon_board = jnp.zeros(28, dtype=jnp.int32)
+        backgammon_board = backgammon_board.at[26].set(15)  # Black won (all off)
+        backgammon_board = backgammon_board.at[23].set(-15)  # White in Black's home
+
+        orig_score = original_calc(backgammon_board)
+        opt_score = opt_calc(backgammon_board)
+        assert orig_score == 3, f"Original should be 3 (backgammon), got {orig_score}"
+        assert opt_score == orig_score, f"Optimized score {opt_score} != original {orig_score}"
+
+        # Gammon win (2 points): opponent bore off 0 pieces, not on bar/home
+        gammon_board = jnp.zeros(28, dtype=jnp.int32)
+        gammon_board = gammon_board.at[26].set(15)  # Black won
+        gammon_board = gammon_board.at[7].set(-15)  # White in mid-board
+
+        orig_score = original_calc(gammon_board)
+        opt_score = opt_calc(gammon_board)
+        assert orig_score == 2, f"Original should be 2 (gammon), got {orig_score}"
+        assert opt_score == orig_score, f"Optimized score {opt_score} != original {orig_score}"
+
+        # Single win (1 point): opponent bore off at least 1 piece
+        single_board = jnp.zeros(28, dtype=jnp.int32)
+        single_board = single_board.at[26].set(15)  # Black won
+        single_board = single_board.at[27].set(-3)  # White bore off 3
+        single_board = single_board.at[3].set(-12)  # Rest still on board
+
+        orig_score = original_calc(single_board)
+        opt_score = opt_calc(single_board)
+        assert orig_score == 1, f"Original should be 1 (single), got {orig_score}"
+        assert opt_score == orig_score, f"Optimized score {opt_score} != original {orig_score}"
+
+    def test_rewards_identical_short_game(self, envs_bg):
+        """Test that rewards are identical during short game play (50 steps)."""
+        # Play 50 steps and compare intermediate rewards
+        key = jax.random.PRNGKey(42)
+        states = {name: env.init(key) for name, env in envs_bg.items()}
+
+        for step in range(50):
+            if states["original"].terminated:
+                break
+
+            if states["original"]._is_stochastic:
+                key, subkey = jax.random.split(key)
+                dice_action = jax.random.randint(subkey, shape=(), minval=0, maxval=21)
+                states = {name: env.step_stochastic(state, dice_action)
+                          for (name, env), state in zip(envs_bg.items(), states.values())}
+            else:
+                key, subkey = jax.random.split(key)
+                legal = states["original"].legal_action_mask
+                logits = jnp.where(legal, 0.0, -1e9)
+                action = jax.random.categorical(subkey, logits)
+
+                key, k1 = jax.random.split(key)
+                states = {name: env.step(state, action, k1)
+                          for (name, env), state in zip(envs_bg.items(), states.values())}
+
+            # Check rewards match at each step
+            baseline = states["original"]
+            for name, state in states.items():
+                assert jnp.allclose(baseline.rewards, state.rewards), \
+                    f"Step {step}: {name} rewards {state.rewards} != original {baseline.rewards}"
+
+    def test_board_state_identical_during_play(self, envs_bg):
+        """Test that board states remain identical during gameplay."""
+        key = jax.random.PRNGKey(123)
+        states = {name: env.init(key) for name, env in envs_bg.items()}
+
+        for step in range(30):
+            if states["original"].terminated:
+                break
+
+            # Check boards match
+            baseline_board = states["original"]._board
+            for name, state in states.items():
+                assert jnp.allclose(baseline_board, state._board), \
+                    f"Step {step}: {name} board differs from original"
+
+            if states["original"]._is_stochastic:
+                key, subkey = jax.random.split(key)
+                dice_action = jax.random.randint(subkey, shape=(), minval=0, maxval=21)
+                states = {name: env.step_stochastic(state, dice_action)
+                          for (name, env), state in zip(envs_bg.items(), states.values())}
+            else:
+                key, subkey = jax.random.split(key)
+                legal = states["original"].legal_action_mask
+                logits = jnp.where(legal, 0.0, -1e9)
+                action = jax.random.categorical(subkey, logits)
+
+                key, k1 = jax.random.split(key)
+                states = {name: env.step(state, action, k1)
+                          for (name, env), state in zip(envs_bg.items(), states.values())}
