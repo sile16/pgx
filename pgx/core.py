@@ -337,18 +337,70 @@ class StochasticEnv(Env):
     def step_deterministic(self, state: State, action: Array) -> State:
         """
         PHASE 1: Player Decision.
-        Applies the player's action and updates observation.
+        Applies the player's action with full safety checks.
+
+        This mirrors the behavior of Env.step() for the deterministic phase:
+        - Increments _step_count
+        - Checks for illegal actions and applies penalty
+        - Handles terminal state (returns zero rewards if already terminated)
+        - Sets legal_action_mask to all True at terminal
+        - Updates observation
         """
-        state = self._step_deterministic(state, action)
+        is_illegal = ~state.legal_action_mask[action]
+        current_player = state.current_player
+
+        # If already terminated/truncated, return with zero rewards
+        state = jax.lax.cond(
+            (state.terminated | state.truncated),
+            lambda: state.replace(rewards=jnp.zeros_like(state.rewards)),  # type: ignore
+            lambda: self._step_deterministic(state.replace(_step_count=state._step_count + 1), action),  # type: ignore
+        )
+
+        # Illegal action penalty
+        state = jax.lax.cond(
+            is_illegal,
+            lambda: self._step_with_illegal_action(state, current_player),
+            lambda: state,
+        )
+
+        # Set legal_action_mask to all True at terminal
+        state = jax.lax.cond(
+            state.terminated,
+            lambda: state.replace(legal_action_mask=jnp.ones_like(state.legal_action_mask)),  # type: ignore
+            lambda: state,
+        )
+
         observation = self.observe(state)
         return state.replace(observation=observation)  # type: ignore
 
     def step_stochastic(self, state: State, action: Array) -> State:
         """
         PHASE 2: Nature Resolution.
-        Applies a specific random outcome and updates observation.
+        Applies a specific random outcome.
+
+        This handles:
+        - Terminal state (returns zero rewards if already terminated)
+        - Sets legal_action_mask to all True at terminal
+        - Updates observation
+
+        Does NOT:
+        - Increment _step_count (not a player action)
+        - Check for illegal actions (outcomes are valid by design)
         """
-        state = self._step_stochastic(state, action)
+        # If already terminated/truncated, return with zero rewards
+        state = jax.lax.cond(
+            (state.terminated | state.truncated),
+            lambda: state.replace(rewards=jnp.zeros_like(state.rewards)),  # type: ignore
+            lambda: self._step_stochastic(state, action),
+        )
+
+        # Set legal_action_mask to all True at terminal
+        state = jax.lax.cond(
+            state.terminated,
+            lambda: state.replace(legal_action_mask=jnp.ones_like(state.legal_action_mask)),  # type: ignore
+            lambda: state,
+        )
+
         observation = self.observe(state)
         return state.replace(observation=observation)  # type: ignore
 
