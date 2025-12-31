@@ -56,7 +56,7 @@ def test_step_hold():
     state = env.init(key)
 
     # Force a specific current player and turn total
-    state = state.replace(current_player=jnp.int32(0), _turn_total=jnp.int32(10), legal_action_mask=jnp.array([True, True, False, False, False, False]))
+    state = state.replace(current_player=jnp.int32(0), _turn_total=jnp.int32(10), legal_action_mask=jnp.array([True, True]))
 
     state = env.step(state, jnp.int32(1), key) # Action 1: Hold
 
@@ -77,7 +77,7 @@ def test_win_condition():
     state = env.init(key)
 
     # Set score to near winning, then hold to win
-    state = state.replace(current_player=jnp.int32(0), _scores=jnp.array([95, 0]), _turn_total=jnp.int32(10), legal_action_mask=jnp.array([True, True, False, False, False, False]))
+    state = state.replace(current_player=jnp.int32(0), _scores=jnp.array([95, 0]), _turn_total=jnp.int32(10), legal_action_mask=jnp.array([True, True]))
     state = env.step(state, jnp.int32(1), key) # Action 1: Hold
 
     assert state.terminated
@@ -93,7 +93,7 @@ def test_step_on_terminated_state_returns_zero_reward():
         current_player=jnp.int32(0),
         _scores=jnp.array([99, 0]),
         _turn_total=jnp.int32(1),
-        legal_action_mask=jnp.array([True, True, False, False, False, False]),
+        legal_action_mask=jnp.array([True, True]),
     )
     key, subkey = jax.random.split(key)
     state = env.step(state, jnp.int32(1), subkey)  # Hold -> win
