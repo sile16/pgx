@@ -64,7 +64,7 @@ class TestStepDeterministic:
 
     def test_2048_step_deterministic_reward(self):
         """2048: step_deterministic should compute merge rewards correctly."""
-        from pgx.play2048 import State
+        from pgx.play2048_v2_all import State
         env = pgx.make("2048")
 
         # Create a board with mergeable tiles: [2, 2, 0, 0] in first row
@@ -200,7 +200,7 @@ class TestRewards:
 
     def test_2048_merge_reward(self):
         """2048: Merging tiles should give reward equal to merged tile value."""
-        from pgx.play2048 import State
+        from pgx.play2048_v2_all import State
         env = pgx.make("2048")
 
         # Create board with [4, 4, 0, 0] (4 is represented as 2, since 2^2=4)
@@ -215,7 +215,7 @@ class TestRewards:
 
     def test_2048_no_merge_no_reward(self):
         """2048: Non-merging move should give zero reward."""
-        from pgx.play2048 import State
+        from pgx.play2048_v2_all import State
         env = pgx.make("2048")
 
         # Create board with [2, 4, 0, 0] (no merges possible)
@@ -389,7 +389,7 @@ class TestInvalidActions:
 
     def test_2048_illegal_action_penalty(self):
         """2048: Taking illegal action should terminate with penalty."""
-        from pgx.play2048 import State
+        from pgx.play2048_v2_all import State
         env = pgx.make("2048")
 
         # Create a board where left swipe is impossible
@@ -497,7 +497,7 @@ class TestEdgeCases:
 
     def test_2048_game_over_detection(self):
         """2048: Game should end when no moves are possible."""
-        from pgx.play2048 import State
+        from pgx.play2048_v2_all import State
         env = pgx.make("2048")
 
         # Create a completely stuck board
