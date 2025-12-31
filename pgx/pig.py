@@ -80,7 +80,7 @@ class Pig(core.StochasticEnv):
 
     @property
     def version(self) -> str:
-        return "v1"
+        return "v2"
 
     @property
     def num_players(self) -> int:
