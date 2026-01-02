@@ -98,6 +98,11 @@ class ShutTheBox(core.StochasticEnv):
         """
         return self._stochastic_action_probs
 
+    @property
+    def static_stochastic_action_probs(self) -> Array:
+        """Returns the static probability distribution (dice rolls are state-independent)."""
+        return self._stochastic_action_probs
+
     def chance_outcomes(self, state: State) -> Tuple[Array, Array]:
         outcomes = jnp.arange(self.num_stochastic_actions, dtype=jnp.int32)
         return outcomes, self.stochastic_action_probs(state)

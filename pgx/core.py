@@ -309,6 +309,36 @@ class StochasticEnv(Env):
         """Returns True if this is a stochastic environment."""
         return True
 
+    @property
+    def stochastic_action_probs_is_static(self) -> bool:
+        """Returns True if stochastic_action_probs returns the same distribution regardless of state.
+
+        When True, callers can cache the result outside JIT loops for ~9% performance improvement.
+        When False (e.g., 2048), probabilities depend on state and must be computed each time.
+        """
+        return True
+
+    @abc.abstractmethod
+    def stochastic_action_probs(self, state: State) -> Array:
+        """Returns probability distribution over stochastic outcomes.
+
+        For state-independent games (stochastic_action_probs_is_static=True),
+        use static_stochastic_action_probs for better performance in JIT contexts.
+        """
+        ...
+
+    @property
+    def static_stochastic_action_probs(self) -> Array:
+        """Returns the static probability distribution for state-independent games.
+
+        Raises:
+            AttributeError: If stochastic_action_probs_is_static is False.
+        """
+        raise AttributeError(
+            f"{self.__class__.__name__} has state-dependent stochastic probabilities. "
+            "Use stochastic_action_probs(state) instead."
+        )
+
     @abc.abstractmethod
     def _step_deterministic(self, state: State, action: Array) -> State:
         """

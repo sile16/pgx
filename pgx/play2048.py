@@ -83,6 +83,11 @@ class Play2048(core.StochasticEnv):
     def _step_stochastic(self, state: State, action: Array) -> State:
         return _step_stochastic(state, action)
 
+    @property
+    def stochastic_action_probs_is_static(self) -> bool:
+        """Returns False because 2048 probabilities depend on which cells are empty."""
+        return False
+
     def stochastic_action_probs(self, state: State) -> Array:
         """Returns probability distribution over stochastic outcomes.
 
