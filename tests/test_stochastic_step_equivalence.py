@@ -27,8 +27,8 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from pgx.backgammon_v2_all import BackgammonV2All
-from pgx.play2048_v2_all import Play2048V2All
+from pgx.backgammon import Backgammon
+from pgx.play2048 import Play2048
 from pgx.pig import Pig
 from pgx.shut_the_box import ShutTheBox
 
@@ -67,7 +67,7 @@ class TestBackgammonStepEquivalence:
 
     def test_single_step_equivalence(self):
         """Single step should produce identical results."""
-        env = BackgammonV2All()
+        env = Backgammon()
         key = jax.random.PRNGKey(42)
 
         # Initialize
@@ -110,7 +110,7 @@ class TestBackgammonStepEquivalence:
 
     def test_step_count_increments_in_deterministic(self):
         """_step_count should increment in step_deterministic, not step_stochastic."""
-        env = BackgammonV2All()
+        env = Backgammon()
         key = jax.random.PRNGKey(123)
         state = env.init(key)
 
@@ -137,7 +137,7 @@ class TestPlay2048StepEquivalence:
 
     def test_single_step_equivalence(self):
         """Single step should produce identical results with same random key."""
-        env = Play2048V2All()
+        env = Play2048()
         key = jax.random.PRNGKey(42)
 
         # Initialize
@@ -171,7 +171,7 @@ class TestPlay2048StepEquivalence:
 
     def test_step_count_increments_in_deterministic(self):
         """_step_count should increment in step_deterministic, not step_stochastic."""
-        env = Play2048V2All()
+        env = Play2048()
         key = jax.random.PRNGKey(123)
         state = env.init(key)
 
@@ -427,7 +427,7 @@ class TestLegalActionMaskAtTerminal:
         state = state.replace(
             _scores=jnp.array([99, 0], dtype=jnp.int32),
             _turn_total=jnp.int32(1),
-            legal_action_mask=jnp.array([True, True, False, False, False, False], dtype=jnp.bool_)
+            legal_action_mask=jnp.array([True, True], dtype=jnp.bool_)
         )
 
         # Hold (action 1) to win
@@ -448,7 +448,7 @@ class TestLegalActionMaskAtTerminal:
         state = state.replace(
             _scores=jnp.array([99, 0], dtype=jnp.int32),
             _turn_total=jnp.int32(1),
-            legal_action_mask=jnp.array([True, True, False, False, False, False], dtype=jnp.bool_)
+            legal_action_mask=jnp.array([True, True], dtype=jnp.bool_)
         )
 
         # Hold (action 1) to win

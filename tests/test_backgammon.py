@@ -629,18 +629,18 @@ def test_stochastic_state():
 def test_stochastic_actions():
     """Test getting available stochastic actions and their probabilities."""
     # For regular mode, all 21 dice combinations should be possible
-    assert len(env.stochastic_action_probs) == 21
-    
+    assert len(env._stochastic_action_probs) == 21
+
     # Test that probabilities sum to 1
-    assert jnp.isclose(jnp.sum(env.stochastic_action_probs), 1.0)
-    
+    assert jnp.isclose(jnp.sum(env._stochastic_action_probs), 1.0)
+
     # Test simple doubles mode
     env_simple = Backgammon(simple_doubles=True)
-    assert len(env_simple.stochastic_action_probs) == 21
-    
+    assert len(env_simple._stochastic_action_probs) == 21
+
     # In simple doubles mode, only the first 6 actions (doubles) have non-zero probability
-    assert jnp.all(env_simple.stochastic_action_probs[6:] == 0)
-    assert jnp.isclose(jnp.sum(env_simple.stochastic_action_probs), 1.0)
+    assert jnp.all(env_simple._stochastic_action_probs[6:] == 0)
+    assert jnp.isclose(jnp.sum(env_simple._stochastic_action_probs), 1.0)
 
 
 def test_stochastic_step():

@@ -12,6 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+2048 environment with optimized implementation.
+
+Optimizations:
+1. No rotations - use flip/transpose instead of rot90 (avoids memory shuffles)
+2. Parallel direction computation - compute all 4 directions, then select
+
+Note: Branchless slide/merge with argsort is NOT used here because
+argsort is slow on GPU for small arrays. When computing all 4 directions,
+the overhead of 48 argsort calls (4 dirs x 4 rows x 3 slides) is too high.
+The conditional approach with jax.lax.cond compiles efficiently.
+"""
 
 from typing import Optional, Tuple
 
@@ -36,14 +48,10 @@ class State(core.State):
     truncated: Array = FALSE
     legal_action_mask: Array = jnp.ones(4, dtype=jnp.bool_)
     _step_count: Array = jnp.int32(0)
-    # Stochastic related
     _is_stochastic: Array = FALSE
-    # Board after the player's move but before random tile spawn (raveled 4x4).
-    # Used to override the internal stochastic spawn via `stochastic_step`.
     _stochastic_board: Array = jnp.zeros(16, dtype=jnp.int32)
-    _last_spawn_pos: Array = jnp.int32(-1)  # 0..15
-    _last_spawn_num: Array = jnp.int32(0)  # 1 (2) or 2 (4)
-    # --- 2048 specific ---
+    _last_spawn_pos: Array = jnp.int32(-1)
+    _last_spawn_num: Array = jnp.int32(0)
     _board: Array = jnp.zeros(16, jnp.int32)
 
     @property
@@ -54,12 +62,6 @@ class State(core.State):
 class Play2048(core.StochasticEnv):
     def __init__(self):
         super().__init__()
-        # (pos, value) where pos=0..15, value in {2,4}.
-        # action = 2 * pos + value_idx, value_idx: 0->2, 1->4.
-        self.stochastic_action_probs = jnp.tile(
-            jnp.array([0.9 / 16.0, 0.1 / 16.0], dtype=jnp.float32),
-            16,
-        )
 
     def step(self, state: core.State, action: Array, key: Optional[Array] = None) -> core.State:
         return super().step(state, action, key)
@@ -81,46 +83,45 @@ class Play2048(core.StochasticEnv):
     def _step_stochastic(self, state: State, action: Array) -> State:
         return _step_stochastic(state, action)
 
-    def chance_outcomes(self, state: State) -> Tuple[Array, Array]:
+    def stochastic_action_probs(self, state: State) -> Array:
+        """Returns probability distribution over stochastic outcomes.
+
+        For 2048, tiles spawn on empty cells with 90% chance of 2, 10% chance of 4.
+        The distribution is state-dependent (only empty cells can receive tiles).
+        """
         base_board_2d = state._stochastic_board.reshape((4, 4))
         flat = base_board_2d.ravel()
         empty_mask = (flat == 0)
         n_empty = empty_mask.sum()
         p_pos = jnp.where(n_empty > 0, 1.0 / n_empty, 0.0)
-        
-        valid_pos = empty_mask[:, None] # (16, 1)
-        base_probs = jnp.array([0.9, 0.1]) # (2,)
+
+        valid_pos = empty_mask[:, None]  # (16, 1)
+        base_probs = jnp.array([0.9, 0.1], dtype=jnp.float32)  # (2,)
         probs_grid = valid_pos * base_probs * p_pos
-        probs_flat = probs_grid.ravel()
-        
-        outcomes = jnp.arange(32, dtype=jnp.int32)
-        return outcomes, probs_flat
+        return probs_grid.ravel()
+
+    def chance_outcomes(self, state: State) -> Tuple[Array, Array]:
+        outcomes = jnp.arange(self.num_stochastic_actions, dtype=jnp.int32)
+        return outcomes, self.stochastic_action_probs(state)
 
     def stochastic_step(self, state: State, action: Array) -> State:
         return self.step_stochastic(state, action)
 
     def _step_stochastic_random(self, state: State, key: PRNGKey) -> State:
-        """Optimized random spawn using categorical + bernoulli (internal, no obs update)."""
         base = state._stochastic_board
         k1, k2 = jax.random.split(key)
-
-        # Pick random empty position using categorical (faster than random.choice)
         empty_mask = (base == 0)
         logits = jnp.where(empty_mask, 0.0, -1e9)
         pos = jax.random.categorical(k1, logits)
-
-        # Pick value: 90% chance of 2 (idx=0), 10% chance of 4 (idx=1)
         is_four = jax.random.bernoulli(k2, 0.1)
         value_idx = is_four.astype(jnp.int32)
-
         action = 2 * pos + value_idx
         return self._step_stochastic(state, action)
 
     def step_stochastic_random(self, state: State, key: PRNGKey) -> State:
-        """Optimized random spawn using categorical + bernoulli instead of choice."""
         state = self._step_stochastic_random(state, key)
         observation = self._observe(state, state.current_player)
-        return state.replace(observation=observation)  # type: ignore
+        return state.replace(observation=observation)
 
     @property
     def id(self) -> core.EnvId:
@@ -128,11 +129,20 @@ class Play2048(core.StochasticEnv):
 
     @property
     def version(self) -> str:
-        return "v2"
+        return "v3"
 
     @property
     def num_players(self) -> int:
         return 1
+
+    @property
+    def num_stochastic_actions(self) -> int:
+        """Number of possible stochastic outcomes (16 positions x 2 tile values)."""
+        return 32
+
+
+# Backward compatibility alias
+Play2048V2All = Play2048
 
 
 def _init(rng: PRNGKey) -> State:
@@ -142,121 +152,35 @@ def _init(rng: PRNGKey) -> State:
     return State(
         _board=board.ravel(),
         legal_action_mask=_legal_action_mask(board.reshape((4, 4))),
-    )  # type:ignore
-
-
-def _step_deterministic(state: State, action: Array) -> State:
-    """action: 0(left), 1(up), 2(right), 3(down)"""
-    board_2d = state._board.reshape((4, 4))
-    board_2d = jax.lax.switch(
-        action,
-        [
-            lambda: board_2d,
-            lambda: jnp.rot90(board_2d, 1),
-            lambda: jnp.rot90(board_2d, 2),
-            lambda: jnp.rot90(board_2d, 3),
-        ],
-    )
-    board_2d, reward = jax.vmap(_slide_and_merge)(board_2d)
-    board_2d = jax.lax.switch(
-        action,
-        [
-            lambda: board_2d,
-            lambda: jnp.rot90(board_2d, -1),
-            lambda: jnp.rot90(board_2d, -2),
-            lambda: jnp.rot90(board_2d, -3),
-        ],
-    )
-
-    return state.replace(  # type:ignore
-        _board=board_2d.ravel(),
-        rewards=jnp.float32([reward.sum()]),
-        legal_action_mask=jnp.zeros(4, dtype=jnp.bool_),
-        terminated=FALSE,
-        _is_stochastic=TRUE,
-        _stochastic_board=board_2d.ravel(),
-        _last_spawn_pos=jnp.int32(-1),
-        _last_spawn_num=jnp.int32(0),
     )
 
 
-def _step_stochastic(state: State, action: Array) -> State:
-    """
-    action = 2 * pos + value_idx, where pos=0..15 and value_idx: 0->2, 1->4.
-    """
-    base_board_2d = state._stochastic_board.reshape((4, 4))
-    pos = (action // 2).astype(jnp.int32)
-    value_idx = (action % 2).astype(jnp.int32)
-    set_num = (value_idx + 1).astype(jnp.int32)  # 1 (2) or 2 (4)
+# =============================================================================
+# SLIDE AND MERGE (using conditionals - faster than argsort for small arrays)
+# =============================================================================
 
-    board_2d = base_board_2d.at[pos // 4, pos % 4].set(set_num)
-
-    legal_action_mask = _legal_action_mask(board_2d)
-    terminated = ~legal_action_mask.any()
-    
-    return state.replace(  # type:ignore
-        _board=board_2d.ravel(),
-        legal_action_mask=legal_action_mask,
-        terminated=terminated,
-        _is_stochastic=FALSE,
-        _last_spawn_pos=pos,
-        _last_spawn_num=set_num,
+def _slide_left(line):
+    """Slide left using conditionals (faster than argsort on GPU for 4 elements)."""
+    line = jax.lax.cond(
+        (line[2] == 0),
+        lambda: line.at[2:].set(jnp.roll(line[2:], -1)),
+        lambda: line,
     )
-
-
-def _legal_action_mask(board_2d):
-    return jax.vmap(_can_slide_left)(
-        jnp.array(
-            [
-                board_2d,
-                jnp.rot90(board_2d, 1),
-                jnp.rot90(board_2d, 2),
-                jnp.rot90(board_2d, 3),
-            ]
-        )
+    line = jax.lax.cond(
+        (line[1] == 0),
+        lambda: line.at[1:].set(jnp.roll(line[1:], -1)),
+        lambda: line,
     )
-
-
-def _observe(state: State, player_id) -> Array:
-    board = state._board  # (16,)
-    # Use scatter for vectorized one-hot encoding
-    obs = jnp.zeros((16, 32), dtype=jnp.bool_)
-    obs = obs.at[jnp.arange(16), board].set(TRUE)
-    obs = obs.at[:, 31].set(state._is_stochastic)
-    return obs.reshape((4, 4, 32))
-
-
-def _add_random_num(board_2d, key):
-    """Add 2 or 4 to the empty space on the board.
-    2 appears 90% of the time, and 4 appears 10% of the time.
-    cf. https://github.com/gabrielecirulli/2048/blob/master/js/game_manager.js#L71
-    """
-    key, sub_key = jax.random.split(key)
-    pos = jax.random.choice(key, jnp.arange(16), p=(board_2d.ravel() == 0))
-    set_num = jax.random.choice(sub_key, jnp.int32([1, 2]), p=jnp.array([0.9, 0.1]))
-    board_2d = board_2d.at[pos // 4, pos % 4].set(set_num)
-    return board_2d
-
-
-def _add_random_num_with_info(board_2d, key):
-    """Like `_add_random_num`, but also returns (pos, set_num)."""
-    key, sub_key = jax.random.split(key)
-    pos = jax.random.choice(key, jnp.arange(16), p=(board_2d.ravel() == 0))
-    set_num = jax.random.choice(sub_key, jnp.int32([1, 2]), p=jnp.array([0.9, 0.1]))
-    board_2d = board_2d.at[pos // 4, pos % 4].set(set_num)
-    return board_2d, (pos.astype(jnp.int32), set_num.astype(jnp.int32))
-
-
-def _slide_and_merge(line):
-    """[2 2 2 2] -> [4 4 0 0]"""
-    line = _slide_left(line)
-    line, reward = _merge(line)
-    line = _slide_left(line)
-    return line, reward
+    line = jax.lax.cond(
+        (line[0] == 0),
+        lambda: jnp.roll(line, -1),
+        lambda: line,
+    )
+    return line
 
 
 def _merge(line):
-    """[2 2 2 2] -> [4 0 4 0]"""
+    """Merge adjacent equal tiles."""
     line, reward = jax.lax.cond(
         (line[0] != 0) & (line[0] == line[1]),
         lambda: (
@@ -284,51 +208,128 @@ def _merge(line):
     return line, reward
 
 
-def _slide_left(line):
-    """[0 2 0 2] -> [2 2 0 0]"""
-    line = jax.lax.cond(
-        (line[2] == 0),
-        lambda: line.at[2:].set(jnp.roll(line[2:], -1)),
-        lambda: line,
-    )
-    line = jax.lax.cond(
-        (line[1] == 0),
-        lambda: line.at[1:].set(jnp.roll(line[1:], -1)),
-        lambda: line,
-    )
-    line = jax.lax.cond(
-        (line[0] == 0),
-        lambda: jnp.roll(line, -1),
-        lambda: line,
-    )
-    return line
+def _slide_and_merge(line):
+    """Slide and merge: slide -> merge -> slide"""
+    line = _slide_left(line)
+    line, reward = _merge(line)
+    line = _slide_left(line)
+    return line, reward
 
 
-def _can_slide_left(board_2d):
-    def _can_slide(line):
-        """Judge if it can be moved to the left."""
-        can_slide = (line[0] == 0) & (line[1] > 0)
-        can_slide |= (line[1] == 0) & (line[2] > 0)
-        can_slide |= (line[2] == 0) & (line[3] > 0)
-        can_slide |= (line[0] > 0) & (line[0] == line[1])
-        can_slide |= (line[1] > 0) & (line[1] == line[2])
-        can_slide |= (line[2] > 0) & (line[2] == line[3])
-        can_slide &= ~(line == 0).all()
-        return can_slide
+# =============================================================================
+# NO-ROTATION STEP
+# =============================================================================
 
-    can_slide = jax.vmap(_can_slide)(board_2d).any()
+def _step_deterministic(state: State, action: Array) -> State:
+    """
+    action: 0(left), 1(up), 2(right), 3(down)
+
+    Optimizations:
+    1. Compute all 4 directions in parallel
+    2. Use flip/transpose instead of rot90 (avoids memory shuffles)
+    """
+    board_2d = state._board.reshape((4, 4))
+
+    # LEFT: slide rows left
+    left_result, left_reward = jax.vmap(_slide_and_merge)(board_2d)
+
+    # RIGHT: reverse rows, slide left, reverse back
+    right_input = board_2d[:, ::-1]
+    right_temp, right_reward = jax.vmap(_slide_and_merge)(right_input)
+    right_result = right_temp[:, ::-1]
+
+    # UP: transpose, slide rows left, transpose back
+    up_input = board_2d.T
+    up_temp, up_reward = jax.vmap(_slide_and_merge)(up_input)
+    up_result = up_temp.T
+
+    # DOWN: transpose, reverse, slide, reverse, transpose
+    down_input = board_2d.T[:, ::-1]
+    down_temp, down_reward = jax.vmap(_slide_and_merge)(down_input)
+    down_result = down_temp[:, ::-1].T
+
+    # Stack all results and rewards
+    all_results = jnp.stack([left_result, up_result, right_result, down_result])
+    all_rewards = jnp.stack([left_reward.sum(), up_reward.sum(), right_reward.sum(), down_reward.sum()])
+
+    # Select based on action
+    board_2d = all_results[action]
+    reward = all_rewards[action]
+
+    return state.replace(
+        _board=board_2d.ravel(),
+        rewards=jnp.float32([reward]),
+        legal_action_mask=jnp.zeros(4, dtype=jnp.bool_),
+        terminated=FALSE,
+        _is_stochastic=TRUE,
+        _stochastic_board=board_2d.ravel(),
+        _last_spawn_pos=jnp.int32(-1),
+        _last_spawn_num=jnp.int32(0),
+    )
+
+
+def _step_stochastic(state: State, action: Array) -> State:
+    base_board_2d = state._stochastic_board.reshape((4, 4))
+    pos = (action // 2).astype(jnp.int32)
+    value_idx = (action % 2).astype(jnp.int32)
+    set_num = (value_idx + 1).astype(jnp.int32)
+
+    board_2d = base_board_2d.at[pos // 4, pos % 4].set(set_num)
+
+    legal_action_mask = _legal_action_mask(board_2d)
+    terminated = ~legal_action_mask.any()
+
+    return state.replace(
+        _board=board_2d.ravel(),
+        legal_action_mask=legal_action_mask,
+        terminated=terminated,
+        _is_stochastic=FALSE,
+        _last_spawn_pos=pos,
+        _last_spawn_num=set_num,
+    )
+
+
+# =============================================================================
+# LEGAL ACTION MASK (without rotations)
+# =============================================================================
+
+def _can_slide_row_left(line):
+    """Check if a single row can slide left (branchless)."""
+    can_slide = (line[0] == 0) & (line[1] > 0)
+    can_slide |= (line[1] == 0) & (line[2] > 0)
+    can_slide |= (line[2] == 0) & (line[3] > 0)
+    can_slide |= (line[0] > 0) & (line[0] == line[1])
+    can_slide |= (line[1] > 0) & (line[1] == line[2])
+    can_slide |= (line[2] > 0) & (line[2] == line[3])
+    can_slide &= ~(line == 0).all()
     return can_slide
 
 
-# only for debug
+def _legal_action_mask(board_2d):
+    """Compute legal action mask without rotations."""
+    can_left = jax.vmap(_can_slide_row_left)(board_2d).any()
+    can_right = jax.vmap(_can_slide_row_left)(board_2d[:, ::-1]).any()
+    can_up = jax.vmap(_can_slide_row_left)(board_2d.T).any()
+    can_down = jax.vmap(_can_slide_row_left)(board_2d.T[:, ::-1]).any()
+    return jnp.array([can_left, can_up, can_right, can_down])
+
+
+def _observe(state: State, player_id) -> Array:
+    board = state._board
+    obs = jnp.zeros((16, 32), dtype=jnp.bool_)
+    obs = obs.at[jnp.arange(16), board].set(TRUE)
+    obs = obs.at[:, 31].set(state._is_stochastic)
+    return obs.reshape((4, 4, 32))
+
+
+def _add_random_num(board_2d, key):
+    key, sub_key = jax.random.split(key)
+    pos = jax.random.choice(key, jnp.arange(16), p=(board_2d.ravel() == 0))
+    set_num = jax.random.choice(sub_key, jnp.int32([1, 2]), p=jnp.array([0.9, 0.1]))
+    board_2d = board_2d.at[pos // 4, pos % 4].set(set_num)
+    return board_2d
+
+
 def show(state):
     board = jnp.array([0 if i == 0 else 2**i for i in state._board])
     print(board.reshape((4, 4)))
-
-
-def stochastic_action_to_str(action: Array) -> str:
-    pos = int(action) // 2
-    value_idx = int(action) % 2
-    tile = 2 if value_idx == 0 else 4
-    r, c = divmod(pos, 4)
-    return f"Spawned: {tile} at ({r},{c})"

@@ -49,7 +49,7 @@ class State(core.State):
 class ShutTheBox(core.StochasticEnv):
     def __init__(self):
         super().__init__()
-        self.stochastic_action_probs = jnp.ones(36, dtype=jnp.float32) / 36.0
+        self._stochastic_action_probs = jnp.ones(36, dtype=jnp.float32) / 36.0
 
     def step(self, state: core.State, action: Array, key: Optional[Array] = None) -> core.State:
         return super().step(state, action, key)
@@ -71,7 +71,7 @@ class ShutTheBox(core.StochasticEnv):
 
     @property
     def version(self) -> str:
-        return "v1"
+        return "v2"
 
     @property
     def num_players(self) -> int:
@@ -91,9 +91,21 @@ class ShutTheBox(core.StochasticEnv):
         dice = jnp.stack([d1, d2])
         return self._set_dice(state, dice)
 
+    def stochastic_action_probs(self, state: State) -> Array:
+        """Returns probability distribution over stochastic outcomes.
+
+        For Shut the Box, dice rolls are state-independent (uniform 2d6).
+        """
+        return self._stochastic_action_probs
+
     def chance_outcomes(self, state: State) -> Tuple[Array, Array]:
-        outcomes = jnp.arange(36, dtype=jnp.int32)
-        return outcomes, self.stochastic_action_probs
+        outcomes = jnp.arange(self.num_stochastic_actions, dtype=jnp.int32)
+        return outcomes, self.stochastic_action_probs(state)
+
+    @property
+    def num_stochastic_actions(self) -> int:
+        """Number of possible stochastic outcomes (6*6 dice combinations)."""
+        return int(self._stochastic_action_probs.shape[0])
 
     def _set_dice(self, state: State, dice: Array) -> State:
         """Internal: set dice without observation update."""

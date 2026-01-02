@@ -304,6 +304,11 @@ class StochasticEnv(Env):
     Nature Agency (Stochastic).
     """
 
+    @property
+    def is_stochastic(self) -> bool:
+        """Returns True if this is a stochastic environment."""
+        return True
+
     @abc.abstractmethod
     def _step_deterministic(self, state: State, action: Array) -> State:
         """
@@ -491,19 +496,17 @@ def make(env_id: EnvId):  # noqa: C901
     # NOTE: BridgeBidding environment requires the domain knowledge of bridge
     # So we forbid users to load the bridge environment by `make("bridge_bidding")`.
     if env_id == "2048":
-        # Use optimized variant (1.5x faster with no-rotation optimization)
-        from pgx.play2048_v2_all import Play2048V2All
+        from pgx.play2048 import Play2048
 
-        return Play2048V2All()
+        return Play2048()
     elif env_id == "animal_shogi":
         from pgx.animal_shogi import AnimalShogi
 
         return AnimalShogi()
     elif env_id == "backgammon":
-        # Use optimized variant (2x faster with branchless + fast obs)
-        from pgx.backgammon_v2_all import BackgammonV2All
+        from pgx.backgammon import Backgammon
 
-        return BackgammonV2All()
+        return Backgammon()
     elif env_id == "chess":
         from pgx.chess import Chess
 

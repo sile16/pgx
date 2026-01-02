@@ -51,7 +51,7 @@ class Pig(core.StochasticEnv):
     def __init__(self):
         super().__init__()
         # 1-6 (1/6 probability each)
-        self.stochastic_action_probs = jnp.ones(6, dtype=jnp.float32) / 6.0
+        self._stochastic_action_probs = jnp.ones(6, dtype=jnp.float32) / 6.0
 
     def step(self, state: core.State, action: Array, key: Optional[Array] = None) -> core.State:
         assert key is not None, (
@@ -80,7 +80,7 @@ class Pig(core.StochasticEnv):
 
     @property
     def version(self) -> str:
-        return "v2"
+        return "v3"
 
     @property
     def num_players(self) -> int:
@@ -92,8 +92,21 @@ class Pig(core.StochasticEnv):
     def _step_stochastic(self, state: State, action: Array) -> State:
         return _step_stochastic(state, action)
 
+    def stochastic_action_probs(self, state: State) -> Array:
+        """Returns probability distribution over stochastic outcomes.
+
+        For Pig, dice rolls are state-independent (uniform 1-6).
+        """
+        return self._stochastic_action_probs
+
     def chance_outcomes(self, state: State) -> Tuple[Array, Array]:
-        return jnp.arange(6, dtype=jnp.int32), self.stochastic_action_probs
+        outcomes = jnp.arange(self.num_stochastic_actions, dtype=jnp.int32)
+        return outcomes, self.stochastic_action_probs(state)
+
+    @property
+    def num_stochastic_actions(self) -> int:
+        """Number of possible stochastic outcomes (6 die faces)."""
+        return int(self._stochastic_action_probs.shape[0])
 
     def stochastic_step(self, state: State, action: Array) -> State:
         # Backward compatibility
