@@ -40,10 +40,14 @@ class BenchmarkResult(NamedTuple):
     timeout_games: int
     total_steps: int
     total_moves: int  # Player moves (non-stochastic steps)
+    total_turns: int  # Player turns (current_player changes)
+    total_checker_moves: int  # Estimated checker moves executed
     elapsed_time: float
     games_per_second: float
     steps_per_second: float
     moves_per_second: float  # Player moves per second
+    turns_per_second: float
+    checker_moves_per_second: float
     warmup_time: float
     batch_time_avg: float
     batch_time_min: float
@@ -52,6 +56,8 @@ class BenchmarkResult(NamedTuple):
     # Game statistics
     avg_steps_per_game: float
     avg_moves_per_game: float
+    avg_turns_per_game: float
+    avg_checker_moves_per_game: float
     min_steps: int
     max_steps: int
     # Point distribution (1pt, 2pt, 3pt games)
@@ -189,9 +195,23 @@ def create_batched_game_loop(env, batch_size: int, max_steps: int = 5000):
 
         return jax.vmap(step_one)(states, actions)
 
+    def count_checker_moves(actions: jnp.ndarray, is_stochastic: jnp.ndarray) -> jnp.ndarray:
+        """Approximate checker moves per action; stochastic steps count as zero."""
+        # backgammon2p reports env.id as "backgammon", so branch on version
+        if getattr(env, "version", "") == "2p":
+            src1 = actions // 26
+            src2 = actions % 26
+            move_count = (src1 != 0).astype(jnp.int32) + (src2 != 0).astype(jnp.int32)
+        elif env.id == "backgammon":
+            src = actions // 6
+            move_count = (src != 0).astype(jnp.int32)
+        else:
+            move_count = jnp.zeros_like(actions, dtype=jnp.int32)
+        return jnp.where(is_stochastic, 0, move_count)
+
     def game_step(carry):
         """Single step of the game loop - runs entirely in JAX."""
-        states, steps_taken, moves_taken, key, step_count = carry
+        states, steps_taken, moves_taken, turns_taken, checker_moves_taken, key, step_count = carry
 
         # Generate keys for this step
         key, action_key = jax.random.split(key, 2)
@@ -202,6 +222,9 @@ def create_batched_game_loop(env, batch_size: int, max_steps: int = 5000):
         # Step all games
         next_states = step_batch(states, actions)
 
+        # Checker moves for deterministic actions
+        checker_moves = count_checker_moves(actions, states._is_stochastic)
+
         # Update step counts for running games (before this step)
         running = ~states.terminated
         steps_taken = steps_taken + running.astype(jnp.int32)
@@ -210,20 +233,27 @@ def create_batched_game_loop(env, batch_size: int, max_steps: int = 5000):
         is_move = running & ~states._is_stochastic
         moves_taken = moves_taken + is_move.astype(jnp.int32)
 
-        return (next_states, steps_taken, moves_taken, key, step_count + 1)
+        # Track turns (current_player change on still-running games)
+        turn_change = running & (next_states.current_player != states.current_player)
+        turns_taken = turns_taken + turn_change.astype(jnp.int32)
+
+        # Checker moves
+        checker_moves_taken = checker_moves_taken + checker_moves * running.astype(jnp.int32)
+
+        return (next_states, steps_taken, moves_taken, turns_taken, checker_moves_taken, key, step_count + 1)
 
     def continue_condition(carry):
         """Continue while any game is still running and under max_steps."""
-        states, steps_taken, moves_taken, key, step_count = carry
+        states, steps_taken, moves_taken, turns_taken, checker_moves_taken, key, step_count = carry
         any_running = jnp.any(~states.terminated)
         under_limit = step_count < max_steps
         return any_running & under_limit
 
     @jax.jit
-    def run_batched_games(key: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    def run_batched_games(key: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         """
         Run a batch of games to completion using JAX while_loop.
-        Returns (steps_per_game, moves_per_game, completed_mask, win_scores).
+        Returns (steps_per_game, moves_per_game, turns_per_game, checker_moves_per_game, completed_mask, win_scores).
         """
         # Initialize batch of games
         keys = jax.random.split(key, batch_size + 1)
@@ -233,11 +263,13 @@ def create_batched_game_loop(env, batch_size: int, max_steps: int = 5000):
 
         steps_taken = jnp.zeros(batch_size, dtype=jnp.int32)
         moves_taken = jnp.zeros(batch_size, dtype=jnp.int32)
+        turns_taken = jnp.zeros(batch_size, dtype=jnp.int32)
+        checker_moves_taken = jnp.zeros(batch_size, dtype=jnp.int32)
         step_count = jnp.int32(0)
 
         # Run the game loop entirely in JAX
-        initial_carry = (states, steps_taken, moves_taken, key, step_count)
-        final_states, final_steps, final_moves, _, _ = jax.lax.while_loop(
+        initial_carry = (states, steps_taken, moves_taken, turns_taken, checker_moves_taken, key, step_count)
+        final_states, final_steps, final_moves, final_turns, final_checker_moves, _, _ = jax.lax.while_loop(
             continue_condition,
             game_step,
             initial_carry
@@ -245,7 +277,7 @@ def create_batched_game_loop(env, batch_size: int, max_steps: int = 5000):
 
         # Get win scores (absolute value of max reward per game)
         win_scores = jnp.abs(final_states.rewards).max(axis=-1)
-        return final_steps, final_moves, final_states.terminated, win_scores
+        return final_steps, final_moves, final_turns, final_checker_moves, final_states.terminated, win_scores
 
     return run_batched_games, init_fn
 
@@ -291,7 +323,7 @@ def run_benchmark(
     warmup_start = time.perf_counter()
     for i in range(warmup_batches):
         key, subkey = jax.random.split(key)
-        steps, moves, completed, win_scores = run_batched_games(subkey)
+        steps, moves, turns, checker_moves, completed, win_scores = run_batched_games(subkey)
         jax.block_until_ready(steps)
     warmup_elapsed = time.perf_counter() - warmup_start
     print(" done")
@@ -303,10 +335,14 @@ def run_benchmark(
     total_games = 0
     total_steps = 0
     total_moves = 0
+    total_turns = 0
+    total_checker_moves = 0
     total_completed = 0
     total_timeouts = 0
     all_steps = []
     all_moves = []
+    all_turns = []
+    all_checker_moves = []
     all_win_scores = []
     all_completed = []
     batch_times = []
@@ -316,17 +352,21 @@ def run_benchmark(
     for i in range(num_batches):
         key, subkey = jax.random.split(key)
         batch_start = time.perf_counter()
-        steps, moves, completed, win_scores = run_batched_games(subkey)
+        steps, moves, turns, checker_moves, completed, win_scores = run_batched_games(subkey)
         jax.block_until_ready(steps)
         batch_times.append(time.perf_counter() - batch_start)
         total_steps += int(jnp.sum(steps))
         total_moves += int(jnp.sum(moves))
+        total_turns += int(jnp.sum(turns))
+        total_checker_moves += int(jnp.sum(checker_moves))
         total_games += batch_size
         completed_count = int(jnp.sum(completed))
         total_completed += completed_count
         total_timeouts += batch_size - completed_count
         all_steps.append(steps)
         all_moves.append(moves)
+        all_turns.append(turns)
+        all_checker_moves.append(checker_moves)
         all_win_scores.append(win_scores)
         all_completed.append(completed)
 
@@ -345,16 +385,22 @@ def run_benchmark(
     # Aggregate all steps, moves, and win scores
     all_steps = jnp.concatenate(all_steps)
     all_moves = jnp.concatenate(all_moves)
+    all_turns = jnp.concatenate(all_turns)
+    all_checker_moves = jnp.concatenate(all_checker_moves)
     all_win_scores = jnp.concatenate(all_win_scores)
     all_completed = jnp.concatenate(all_completed)
 
     games_per_second = total_games / elapsed_time
     steps_per_second = total_steps / elapsed_time
     moves_per_second = total_moves / elapsed_time
+    turns_per_second = total_turns / elapsed_time if elapsed_time > 0 else 0.0
+    checker_moves_per_second = total_checker_moves / elapsed_time if elapsed_time > 0 else 0.0
 
     # Calculate game statistics
     avg_steps_per_game = float(jnp.mean(all_steps))
     avg_moves_per_game = float(jnp.mean(all_moves))
+    avg_turns_per_game = float(jnp.mean(all_turns))
+    avg_checker_moves_per_game = float(jnp.mean(all_checker_moves))
     min_steps = int(jnp.min(all_steps))
     max_steps = int(jnp.max(all_steps))
 
@@ -374,10 +420,14 @@ def run_benchmark(
         timeout_games=total_timeouts,
         total_steps=total_steps,
         total_moves=total_moves,
+        total_turns=total_turns,
+        total_checker_moves=total_checker_moves,
         elapsed_time=elapsed_time,
         games_per_second=games_per_second,
         steps_per_second=steps_per_second,
         moves_per_second=moves_per_second,
+        turns_per_second=turns_per_second,
+        checker_moves_per_second=checker_moves_per_second,
         warmup_time=warmup_elapsed,
         batch_time_avg=batch_time_avg,
         batch_time_min=batch_time_min,
@@ -385,6 +435,8 @@ def run_benchmark(
         batch_time_count=batch_time_count,
         avg_steps_per_game=avg_steps_per_game,
         avg_moves_per_game=avg_moves_per_game,
+        avg_turns_per_game=avg_turns_per_game,
+        avg_checker_moves_per_game=avg_checker_moves_per_game,
         min_steps=min_steps,
         max_steps=max_steps,
         games_1pt=games_1pt,
@@ -498,10 +550,14 @@ def main():
             print(f"  Completed: {result.completed_games:,} ({(result.completed_games / result.num_games * 100):.1f}%) | Timeouts: {result.timeout_games:,}")
             print(f"  Total steps: {result.total_steps:,}")
             print(f"  Total moves: {result.total_moves:,}")
+            print(f"  Total turns: {result.total_turns:,}")
+            print(f"  Total checker moves: {result.total_checker_moves:,}")
             print(f"  Elapsed time: {result.elapsed_time:.2f}s")
             print(f"  Games/second: {result.games_per_second:,.1f}")
             print(f"  Steps/second: {result.steps_per_second:,.1f}")
             print(f"  Moves/second: {result.moves_per_second:,.1f}")
+            print(f"  Turns/second: {result.turns_per_second:,.1f}")
+            print(f"  Checker moves/second: {result.checker_moves_per_second:,.1f}")
             if args.profile:
                 print(
                     f"  Warmup: {result.warmup_time:.2f}s | "
@@ -509,7 +565,11 @@ def main():
                     f"{result.batch_time_min:.3f}/{result.batch_time_max:.3f} "
                     f"({result.batch_time_count} batches)"
                 )
-            print(f"  Avg steps/game: {result.avg_steps_per_game:.1f} ({result.avg_moves_per_game:.1f} moves)")
+            print(
+                f"  Avg steps/game: {result.avg_steps_per_game:.1f} "
+                f"(moves={result.avg_moves_per_game:.1f}, turns={result.avg_turns_per_game:.1f}, "
+                f"checker_moves={result.avg_checker_moves_per_game:.1f})"
+            )
             print(f"  Min/Max steps: {result.min_steps} / {result.max_steps}")
             print(f"  Points: 1pt={result.games_1pt}, 2pt={result.games_2pt}, 3pt={result.games_3pt}")
 
@@ -577,7 +637,9 @@ def save_results_to_json(
             "batch_size": best.batch_size,
             "games_per_second": best.games_per_second,
             "steps_per_second": best.steps_per_second,
-            "moves_per_second": best.moves_per_second
+            "moves_per_second": best.moves_per_second,
+            "turns_per_second": best.turns_per_second,
+            "checker_moves_per_second": best.checker_moves_per_second,
         },
         "all_results": [
             {
@@ -587,10 +649,14 @@ def save_results_to_json(
                 "timeout_games": r.timeout_games,
                 "total_steps": r.total_steps,
                 "total_moves": r.total_moves,
+                "total_turns": r.total_turns,
+                "total_checker_moves": r.total_checker_moves,
                 "elapsed_time": r.elapsed_time,
                 "games_per_second": r.games_per_second,
                 "steps_per_second": r.steps_per_second,
                 "moves_per_second": r.moves_per_second,
+                "turns_per_second": r.turns_per_second,
+                "checker_moves_per_second": r.checker_moves_per_second,
                 "warmup_time": r.warmup_time,
                 "batch_time_avg": r.batch_time_avg,
                 "batch_time_min": r.batch_time_min,
@@ -598,6 +664,8 @@ def save_results_to_json(
                 "batch_time_count": r.batch_time_count,
                 "avg_steps_per_game": r.avg_steps_per_game,
                 "avg_moves_per_game": r.avg_moves_per_game,
+                "avg_turns_per_game": r.avg_turns_per_game,
+                "avg_checker_moves_per_game": r.avg_checker_moves_per_game,
                 "min_steps": r.min_steps,
                 "max_steps": r.max_steps,
                 "games_1pt": r.games_1pt,
