@@ -86,3 +86,61 @@ def test_reverse_order_applied_when_required():
     assert int(next_state._board[24]) == 0  # current player's bar empty
     assert int(next_state._board[25]) == 0  # opponent bar empty
     assert int(next_state._board[22]) == -2  # two opponent checkers at mirrored point 2
+
+
+def test_random_short_games_terminate():
+    """A small batch of random short-game episodes should finish within a modest step cap."""
+    import jax
+
+    env = Backgammon2P(short_game=True)
+    batch_size = 4
+    max_steps = 1000
+
+    init_fn = jax.jit(jax.vmap(env.init))
+    det_step = env.step_deterministic
+    stoch_step = env.stochastic_step
+
+    @jax.jit
+    def run_batch(key):
+        keys = jax.random.split(key, batch_size + 1)
+        states = init_fn(keys[1:])
+
+        steps = jnp.zeros(batch_size, dtype=jnp.int32)
+        step_count = jnp.int32(0)
+        key = keys[0]
+
+        def cond(carry):
+            states, key, steps, step_count = carry
+            return (step_count < max_steps) & jnp.any(~states.terminated)
+
+        def body(carry):
+            states, key, steps, step_count = carry
+            key, action_key = jax.random.split(key, 2)
+            action_keys = jax.random.split(action_key, batch_size)
+
+            def choose_action(state, k):
+                return jax.lax.cond(
+                    state._is_stochastic,
+                    lambda: jax.random.randint(k, (), 0, env.num_stochastic_actions),
+                    lambda: jax.random.categorical(k, logits=jnp.where(state.legal_action_mask, 0.0, -1e9)),
+                )
+
+            actions = jax.vmap(choose_action)(states, action_keys)
+
+            def step_one(state, action):
+                return jax.lax.cond(
+                    state._is_stochastic,
+                    lambda: stoch_step(state, action),
+                    lambda: det_step(state, action),
+                )
+
+            next_states = jax.vmap(step_one)(states, actions)
+            running = ~states.terminated
+            steps = steps + running.astype(jnp.int32)
+            return next_states, key, steps, step_count + 1
+
+        final_states, _, steps_taken, _ = jax.lax.while_loop(cond, body, (states, key, steps, step_count))
+        return final_states.terminated, steps_taken
+
+    terminated, steps_taken = run_batch(jax.random.PRNGKey(0))
+    assert bool(jnp.all(terminated)), f"Batch did not terminate; steps={steps_taken}"
