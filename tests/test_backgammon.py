@@ -531,6 +531,12 @@ def test_calc_win_score():
     back_gammon_board = back_gammon_board.at[23].set(-15)  # black on home board
     assert _calc_win_score(back_gammon_board) == 3
 
+    # backgammon when opponent pieces sit only on bar
+    bar_only_board = jnp.zeros(28, dtype=jnp.int32)
+    bar_only_board = bar_only_board.at[26].set(15)  # current player off all checkers
+    bar_only_board = bar_only_board.at[25].set(-2)  # opponent stuck on bar
+    assert _calc_win_score(bar_only_board) == 3
+
     # gammon win by black
     gammon_board = jnp.zeros(28, dtype=jnp.int32)
     gammon_board = gammon_board.at[26].set(15)

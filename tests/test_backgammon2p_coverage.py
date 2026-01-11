@@ -82,6 +82,13 @@ def test_prefer_higher_die():
     assert mask[action_play_6], "Must be able to play higher die (6)"
     assert not mask[action_play_1], "Cannot play lower die (1) if higher is possible and both impossible"
 
+def test_calc_win_score_counts_bar_for_backgammon():
+    """Opponent checkers only on bar should still count as backgammon (3 points)."""
+    board = jnp.zeros(28, dtype=jnp.int32)
+    board = board.at[26].set(15)  # current player off all checkers
+    board = board.at[25].set(-2)  # opponent stuck on bar
+    assert _calc_win_score(board) == 3
+
 def test_bearing_off_exact():
     """
     Test bearing off exact count.

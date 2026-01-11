@@ -480,7 +480,9 @@ def _is_gammon(board: Array) -> bool:
 
 
 def _remains_at_inner(board: Array) -> bool:
-    return jnp.take(board, _home_board()).sum() != 0
+    inner_sum = jnp.take(board, _home_board()).sum()
+    on_bar = board[_bar_idx() + 1] != 0
+    return (inner_sum != 0) | on_bar
 
 
 def _get_valid_sequence_mask(board: Array, die_first: int, die_second: int) -> Array:

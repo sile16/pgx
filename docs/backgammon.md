@@ -18,7 +18,17 @@
 ```py
 import pgx
 
+# Default micro-action environment (156 actions)
 env = pgx.make("backgammon")
+# env.version -> "v3"
+```
+
+```py
+# Joint-action (two-move) variant with 676 actions
+from pgx.backgammon2p import Backgammon2P
+
+env = Backgammon2P()
+# env.version -> "2p"
 ```
 
 or you can directly load `Backgammon` class
@@ -39,11 +49,20 @@ env = Backgammon()
 > 
 > [Wikipedia](https://en.wikipedia.org/wiki/Backgammon)
 
-## Specs
+## Variants
+
+| Variant | Version | Action space | Description |
+|:--|:--:|:--:|:--|
+| `Backgammon` (default) | `v3` | 156 (= 6 × 26) | Micro-action per die; matches the original Antonoglou-style interface. |
+| `Backgammon2P` | `2p` | 676 (= 26 × 26) | Joint two-move action per turn (one entry for each die); reduces tree depth for agents that sample full-turn actions. |
+
+`pgx.make("backgammon")` returns the `Backgammon` (`v3`) micro-action environment. The `Backgammon2P` joint-action variant must be constructed directly via `Backgammon2P()`. Both share the same environment id (`"backgammon"`) but report different `version` strings.
+
+## Specs (Backgammon v3 micro-action)
 
 | Name | Value |
 |:---|:----:|
-| Version | `v1` |
+| Version | `v3` |
 | Number of players | `2` |
 | Number of actions | `156 (= 6 * 26)` |
 | Observation shape | `(34,)` |
@@ -66,7 +85,11 @@ We used positive numbers for the current player’s chips and negative ones for 
 | `[26:28]` | Number of checkers brone off |
 | `[28:34]` | Number of available moves for each die number |
 
+The `Backgammon2P` variant reuses the same 34-d observation vector.
+
 ## Action
+
+### Micro-action (Backgammon v3)
 
 Action design is same as micro-action in `[Antonoglou+22]`:
 
@@ -74,6 +97,16 @@ Action design is same as micro-action in `[Antonoglou+22]`:
 
 The difference is that after every micro-action, the state transition happens.
 The turn of the same player can continue up to 4 times.
+
+### Joint two-move action (Backgammon2P)
+
+`Backgammon2P` aggregates both dice into a single 676-way action. Each action encodes two sources `(src_for_die1, src_for_die2)`, where each source can be:
+
+- `0`: pass / no-op
+- `1`: move from the bar
+- `2..25`: move from points 1–24
+
+The environment applies the two die values in a legal order for the chosen pair, allowing at most two checker moves per turn (one per die; doubles still allow two compound actions).
 
 ## Rewards
 The game payoff is rewarded.
@@ -83,6 +116,8 @@ Continues until either player wins.
 
 ## Version History
 
+- `v3`: Current micro-action implementation (default returned by `pgx.make("backgammon")`)
+- `2p`: Joint two-move action variant (`Backgammon2P`), instantiated via `Backgammon2P()`
 - `v2`: Specify rng key explicitly (API v2) by [@sotetsuk](https://github.com/sotetsuk) in [#1058](https://github.com/sotetsuk/pgx/pull/1058) (v2.0.0)
 - `v1`: Remove redundant actions (From `162` to `156`) by [@nissymori](https://github.com/nissymori) in [#1004](https://github.com/sotetsuk/pgx/pull/1004) (v1.2.0)
 - `v0` : Initial release (v1.0.0)
