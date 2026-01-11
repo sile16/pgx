@@ -63,3 +63,26 @@ def test_doubles_use_two_actions():
     next_state = env.step(state, jnp.int32(action), jax.random.PRNGKey(1))
     assert int(next_state._remaining_actions) == 1
     assert not bool(next_state._is_stochastic)
+
+
+def test_reverse_order_applied_when_required():
+    """If only the reverse die order is legal, the env should apply that order."""
+    env = Backgammon2P()
+    # One checker on the bar and one on point 1; dice = (1, 2) sorted.
+    board = jnp.zeros(28, dtype=jnp.int32)
+    board = board.at[24].set(1)  # checker on bar
+    board = board.at[0].set(1)   # checker on point 1
+    state = env.init(jax.random.PRNGKey(0))
+    state = state.replace(_board=board)
+    state = env.set_dice(state, jnp.array([0, 1], dtype=jnp.int32))
+
+    # Action encodes (src for die1=point1, src for die2=bar); only reverse order is legal.
+    action = jnp.int32(2 * 26 + 1)
+    assert bool(state.legal_action_mask[action])
+
+    next_state = env.step_deterministic(state, action)
+    # After applying reverse order, both checkers should land on point 2 (mirrored to index 22 after turn flip)
+    # and bar should be empty.
+    assert int(next_state._board[24]) == 0  # current player's bar empty
+    assert int(next_state._board[25]) == 0  # opponent bar empty
+    assert int(next_state._board[22]) == -2  # two opponent checkers at mirrored point 2

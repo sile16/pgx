@@ -514,11 +514,29 @@ def _apply_move_branchless(board: Array, src_idx: Array, die: Array) -> Array:
 
 
 def _apply_action_branchless(board: Array, src1_idx: Array, src2_idx: Array, die1: Array, die2: Array) -> Array:
-    # Always apply both moves. If src_idx is 0, the move is a no-op (delta 0).
-    # However, for the second move, we must use the board state AFTER the first move.
-    board = _apply_move_branchless(board, src1_idx, die1)
-    board = _apply_move_branchless(board, src2_idx, die2)
-    return board
+    # Execute both moves; choose reverse order when only that sequence is legal.
+    board_seq1_first = _apply_move_branchless(board, src1_idx, die1)
+    board_seq1 = _apply_move_branchless(board_seq1_first, src2_idx, die2)
+
+    board_seq2_first = _apply_move_branchless(board, src2_idx, die2)
+    board_seq2 = _apply_move_branchless(board_seq2_first, src1_idx, die1)
+
+    base_inv = _board_invariants(board)
+    seq1_first_legal = _is_move_legal_branchless(board, src1_idx, die1, base_inv)
+    seq2_first_legal = _is_move_legal_branchless(board, src2_idx, die2, base_inv)
+
+    seq1_second_legal = _is_move_legal_branchless(
+        board_seq1_first, src2_idx, die2, _board_invariants(board_seq1_first)
+    )
+    seq2_second_legal = _is_move_legal_branchless(
+        board_seq2_first, src1_idx, die1, _board_invariants(board_seq2_first)
+    )
+
+    seq1_legal = seq1_first_legal & seq1_second_legal
+    seq2_legal = seq2_first_legal & seq2_second_legal
+
+    use_seq1 = seq1_legal | (~seq2_legal)  # Prefer seq1 when both legal; fall back to seq2 when only reverse works.
+    return jnp.where(use_seq1[..., None], board_seq1, board_seq2)
 
 
 def _legal_action_mask_nondoubles(board: Array, die1: Array, die2: Array) -> Array:
