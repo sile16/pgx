@@ -150,73 +150,50 @@ def create_batched_game_loop(env, batch_size: int, max_steps: int = 5000):
     num_stochastic_actions = env.num_stochastic_actions
 
     init_fn = jax.jit(jax.vmap(env.init))
-    step_fn = jax.jit(jax.vmap(env.step))
-    stochastic_step_fn = jax.jit(jax.vmap(env.stochastic_step))
+    det_step_fn = env.step_deterministic
+    stochastic_step_fn = env.stochastic_step
 
     @jax.jit
-    def select_actions_batch(key: jnp.ndarray, states_legal_mask: jnp.ndarray,
-                            states_is_stochastic: jnp.ndarray) -> jnp.ndarray:
+    def select_actions_batch(
+        key: jnp.ndarray, states_legal_mask: jnp.ndarray, states_is_stochastic: jnp.ndarray
+    ) -> jnp.ndarray:
         """Select random actions for a batch of states."""
         keys = jax.random.split(key, states_legal_mask.shape[0])
 
-        # For regular actions, select from legal mask
-        regular_logits = jnp.where(
-            states_legal_mask,
-            0.0,
-            -1e9
-        )
-        regular_actions = jax.vmap(
-            lambda k, l: jax.random.categorical(k, logits=l)
-        )(keys, regular_logits)
+        def choose_action(k, legal_mask, is_stochastic):
+            return jax.lax.cond(
+                is_stochastic,
+                lambda: jax.random.randint(k, shape=(), minval=0, maxval=num_stochastic_actions),
+                lambda: jax.random.categorical(k, logits=jnp.where(legal_mask, 0.0, -1e9)),
+            )
 
-        # For stochastic actions, select random dice roll (0-20)
-        stochastic_actions = jax.vmap(
-            lambda k: jax.random.randint(k, shape=(), minval=0, maxval=num_stochastic_actions)
-        )(keys)
-
-        # Return appropriate action based on whether state is stochastic
-        return jnp.where(states_is_stochastic, stochastic_actions, regular_actions)
+        return jax.vmap(choose_action)(keys, states_legal_mask, states_is_stochastic)
 
     @jax.jit
-    def step_batch(
-        states,
-        actions: jnp.ndarray,
-        keys: jnp.ndarray
-    ):
-        """Step a batch of states, handling both stochastic and regular steps."""
-        is_stochastic = states._is_stochastic
-        was_terminated = states.terminated
+    def step_batch(states, actions: jnp.ndarray):
+        """Step a batch of states, dispatching to stochastic or deterministic phase per state."""
 
-        regular_next = step_fn(states, actions, keys)
-        stochastic_next = stochastic_step_fn(states, actions)
+        def step_one(state, action):
+            return jax.lax.cond(
+                state._is_stochastic,
+                lambda: stochastic_step_fn(state, action),
+                lambda: det_step_fn(state, action),
+            )
 
-        def _broadcast(mask, target):
-            while mask.ndim < target.ndim:
-                mask = mask[..., jnp.newaxis]
-            return mask
-
-        def merge(orig, reg, stoch):
-            stoch_mask = _broadcast(is_stochastic, reg)
-            term_mask = _broadcast(was_terminated, reg)
-            next_val = jnp.where(stoch_mask, stoch, reg)
-            return jnp.where(term_mask, orig, next_val)
-
-        return jax.tree_util.tree_map(merge, states, regular_next, stochastic_next)
+        return jax.vmap(step_one)(states, actions)
 
     def game_step(carry):
         """Single step of the game loop - runs entirely in JAX."""
         states, steps_taken, moves_taken, key, step_count = carry
 
         # Generate keys for this step
-        key, action_key, step_key = jax.random.split(key, 3)
-        # Generate per-game keys for step function
-        step_keys = jax.random.split(step_key, batch_size)
+        key, action_key = jax.random.split(key, 2)
 
         # Select actions for all games
         actions = select_actions_batch(action_key, states.legal_action_mask, states._is_stochastic)
 
         # Step all games
-        next_states = step_batch(states, actions, step_keys)
+        next_states = step_batch(states, actions)
 
         # Update step counts for running games (before this step)
         running = ~states.terminated
