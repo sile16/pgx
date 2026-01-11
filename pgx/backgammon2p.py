@@ -35,6 +35,7 @@ TRUE = jnp.bool_(True)
 FALSE = jnp.bool_(False)
 
 _SRC_INDICES = jnp.arange(26, dtype=jnp.int32)
+_POINT_INDICES = jnp.arange(24, dtype=jnp.int32)
 _NO_OP_ACTION_MASK = jnp.zeros(26 * 26, dtype=jnp.bool_).at[0].set(True)
 
 # Precompute lookup tables
@@ -398,8 +399,28 @@ def _tgt_from_idx_die(src_idx: Array, die: Array) -> Array:
     # die is 1-based, table is 0-based so die-1
     return _TGT_MAP[src_idx, die - 1]
 
+def _board_invariants(board: Array) -> Tuple[Array, Array, Array]:
+    """Features that are constant for all move checks on a given board."""
+    bar_clear = board[_bar_idx()] == 0
+    on_home_board = jnp.where(board[_HOME_BOARD_INDICES] > 0, board[_HOME_BOARD_INDICES], 0).sum()
+    off_count = board[_off_idx()]
+    all_on_home = (15 - off_count) == on_home_board
+    has_checker = board[:24] > 0
+    rear_pos = jnp.where(has_checker, _POINT_INDICES, jnp.int32(100))
+    rear_idx = jnp.min(rear_pos)
+    rear_dist = 24 - rear_idx
+    return bar_clear, all_on_home, rear_dist
 
-def _is_move_legal_branchless(board: Array, src_idx: Array, die: Array) -> Array:
+
+def _is_move_legal_branchless(
+    board: Array,
+    src_idx: Array,
+    die: Array,
+    board_invariants: Optional[Tuple[Array, Array, Array]] = None,
+) -> Array:
+    if board_invariants is None:
+        board_invariants = _board_invariants(board)
+    bar_clear, all_on_home, rear_dist = board_invariants
     src = _src_from_idx(src_idx)
     tgt = _tgt_from_idx_die(src_idx, die)
 
@@ -411,20 +432,11 @@ def _is_move_legal_branchless(board: Array, src_idx: Array, die: Array) -> Array
 
     src_has_checker = board[src_safe] >= 1
     tgt_is_open = board[tgt_safe] >= -1
-    bar_clear = board[24] == 0
     from_bar = src >= 24
 
     point_legal = src_has_checker & tgt_is_open & (from_bar | bar_clear)
 
-    on_home_board = jnp.sum(jnp.where(board[_HOME_BOARD_INDICES] > 0, board[_HOME_BOARD_INDICES], 0))
-    off_count = board[26]
-    all_on_home = (15 - off_count) == on_home_board
-
     dist = 24 - src
-    has_checker = board[:24] > 0
-    rear_pos = jnp.where(has_checker, jnp.arange(24), 100)
-    rear_idx = jnp.min(rear_pos)
-    rear_dist = 24 - rear_idx
 
     exact_roll = dist == die
     highest_and_overbear = (rear_dist <= die) & (rear_dist == dist)
@@ -516,12 +528,17 @@ def _legal_action_mask_nondoubles(board: Array, die1: Array, die2: Array) -> Arr
     # legal1[i] = _is_move_legal(board, src1[i], die1)
     # But src1[i] depends on action index.
     # We can compute "is legal source S for die D" for all S=0..25.
+    base_invariants = _board_invariants(board)
     
     # Legal Sources for Die 1
-    legal_srcs_d1 = jax.vmap(lambda s: _is_move_legal_branchless(board, s, die1))(_SRC_INDICES) # (26,)
+    legal_srcs_d1 = jax.vmap(
+        lambda s: _is_move_legal_branchless(board, s, die1, base_invariants)
+    )(_SRC_INDICES) # (26,)
     
     # Legal Sources for Die 2
-    legal_srcs_d2 = jax.vmap(lambda s: _is_move_legal_branchless(board, s, die2))(_SRC_INDICES) # (26,)
+    legal_srcs_d2 = jax.vmap(
+        lambda s: _is_move_legal_branchless(board, s, die2, base_invariants)
+    )(_SRC_INDICES) # (26,)
     
     # 2. Check validity of Sequence (Die1 -> Die2)
     # This is trickier because Board changes.
@@ -531,15 +548,18 @@ def _legal_action_mask_nondoubles(board: Array, die1: Array, die2: Array) -> Arr
     # Generate 26 next_boards (one for each possible src1)
     # If src1 is invalid, the board doesn't matter (we won't use it), but let's keep it clean.
     next_boards_d1 = jax.vmap(lambda s: _apply_move_branchless(board, s, die1))(_SRC_INDICES) # (26, 28)
+    next_board_inv_d1 = jax.vmap(_board_invariants)(next_boards_d1)
     
     # Now check legality of Die 2 on these next boards.
     # We need a matrix: legal_seq[s1, s2]
     # s1 is dimension 0, s2 is dimension 1.
     
-    def check_d2_on_next(next_board):
-        return jax.vmap(lambda s: _is_move_legal_branchless(next_board, s, die2))(_SRC_INDICES)
+    def check_d2_on_next(next_board, invariants):
+        return jax.vmap(
+            lambda s: _is_move_legal_branchless(next_board, s, die2, invariants)
+        )(_SRC_INDICES)
         
-    legal_seq_matrix = jax.vmap(check_d2_on_next)(next_boards_d1) # (26, 26)
+    legal_seq_matrix = jax.vmap(check_d2_on_next)(next_boards_d1, next_board_inv_d1) # (26, 26)
     
     # Flatten to actions
     legal_seq = legal_seq_matrix.reshape(26 * 26) # (676,)
@@ -566,7 +586,12 @@ def _legal_action_mask_nondoubles(board: Array, die1: Array, die2: Array) -> Arr
     
     legal_srcs_d1_for_d2 = legal_srcs_d2 # Reuse
     next_boards_d2 = jax.vmap(lambda s: _apply_move_branchless(board, s, die2))(_SRC_INDICES)
-    legal_seq_matrix_rev = jax.vmap(lambda nb: jax.vmap(lambda s: _is_move_legal_branchless(nb, s, die1))(_SRC_INDICES))(next_boards_d2)
+    next_board_inv_d2 = jax.vmap(_board_invariants)(next_boards_d2)
+    legal_seq_matrix_rev = jax.vmap(
+        lambda nb, invariants: jax.vmap(
+            lambda s: _is_move_legal_branchless(nb, s, die1, invariants)
+        )(_SRC_INDICES)
+    )(next_boards_d2, next_board_inv_d2)
     
     # Here, index (s1, s2) means src1=s1, src2=s2.
     # But the move order is src2 (Die2) THEN src1 (Die1).
@@ -649,12 +674,20 @@ def _legal_action_mask_doubles(board: Array, die: Array) -> Array:
     # But for (s1, s2), we must check s1->s2.
     
     # 1. Legal s1
-    legal_srcs = jax.vmap(lambda s: _is_move_legal_branchless(board, s, die))(_SRC_INDICES)
+    base_invariants = _board_invariants(board)
+    legal_srcs = jax.vmap(
+        lambda s: _is_move_legal_branchless(board, s, die, base_invariants)
+    )(_SRC_INDICES)
     can_play_one = legal_srcs.any()
     
     # 2. Legal sequence s1->s2
     next_boards = jax.vmap(lambda s: _apply_move_branchless(board, s, die))(_SRC_INDICES)
-    legal_seq_matrix = jax.vmap(lambda nb: jax.vmap(lambda s: _is_move_legal_branchless(nb, s, die))(_SRC_INDICES))(next_boards)
+    next_board_invariants = jax.vmap(_board_invariants)(next_boards)
+    legal_seq_matrix = jax.vmap(
+        lambda nb, invariants: jax.vmap(
+            lambda s: _is_move_legal_branchless(nb, s, die, invariants)
+        )(_SRC_INDICES)
+    )(next_boards, next_board_invariants)
     
     legal_seq = legal_seq_matrix.reshape(26 * 26)
     legal1_expanded = jnp.repeat(legal_srcs, 26)
