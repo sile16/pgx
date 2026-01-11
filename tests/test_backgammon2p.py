@@ -144,3 +144,24 @@ def test_random_short_games_terminate():
 
     terminated, steps_taken = run_batch(jax.random.PRNGKey(0))
     assert bool(jnp.all(terminated)), f"Batch did not terminate; steps={steps_taken}"
+
+
+def test_mask_zero_does_not_stall(monkeypatch):
+    """If legality computation returns an all-zero mask, remaining_actions should drop to 0."""
+    import jax
+
+    env = Backgammon2P()
+
+    def fake_legal_mask(board, dice):
+        return jnp.zeros(26 * 26, dtype=jnp.bool_)
+
+    monkeypatch.setattr("pgx.backgammon2p._legal_action_mask", fake_legal_mask)
+
+    state = env.init(jax.random.PRNGKey(1))
+    # Force deterministic phase with remaining action
+    state = state.replace(_is_stochastic=jnp.array(False), _remaining_actions=jnp.int32(1))
+    action = jnp.int32(0)  # pass (mask is zeroed anyway)
+    next_state = env.step_deterministic(state, action)
+
+    assert int(next_state._remaining_actions) == 0
+    assert next_state.legal_action_mask.shape == (26 * 26,)

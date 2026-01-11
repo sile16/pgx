@@ -268,7 +268,7 @@ def _update_by_action(state: State, action: Array) -> State:
     board_after_move = _apply_action_branchless(state._board, src1_idx, src2_idx, die1, die2)
     remaining_actions_next = state._remaining_actions - 1
     legal_action_mask_next = _legal_action_mask(board_after_move, state._dice)
-    no_moves_left = _is_no_op_mask(legal_action_mask_next)
+    no_moves_left = ~legal_action_mask_next.any()
     remaining_actions = jnp.where(no_moves_left, 0, remaining_actions_next)
     legal_action_mask = jax.lax.cond(
         remaining_actions > 0,
