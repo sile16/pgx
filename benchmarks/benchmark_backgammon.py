@@ -36,6 +36,8 @@ class BenchmarkResult(NamedTuple):
     """Results from a benchmark run."""
     batch_size: int
     num_games: int
+    completed_games: int
+    timeout_games: int
     total_steps: int
     total_moves: int  # Player moves (non-stochastic steps)
     elapsed_time: float
@@ -174,10 +176,15 @@ def create_batched_game_loop(env, batch_size: int, max_steps: int = 5000):
         """Step a batch of states, dispatching to stochastic or deterministic phase per state."""
 
         def step_one(state, action):
+            # Skip already finished games to preserve terminal rewards/flags
             return jax.lax.cond(
-                state._is_stochastic,
-                lambda: stochastic_step_fn(state, action),
-                lambda: det_step_fn(state, action),
+                (state.terminated | state.truncated),
+                lambda: state,
+                lambda: jax.lax.cond(
+                    state._is_stochastic,
+                    lambda: stochastic_step_fn(state, action),
+                    lambda: det_step_fn(state, action),
+                ),
             )
 
         return jax.vmap(step_one)(states, actions)
@@ -296,9 +303,12 @@ def run_benchmark(
     total_games = 0
     total_steps = 0
     total_moves = 0
+    total_completed = 0
+    total_timeouts = 0
     all_steps = []
     all_moves = []
     all_win_scores = []
+    all_completed = []
     batch_times = []
 
     start_time = time.perf_counter()
@@ -312,9 +322,13 @@ def run_benchmark(
         total_steps += int(jnp.sum(steps))
         total_moves += int(jnp.sum(moves))
         total_games += batch_size
+        completed_count = int(jnp.sum(completed))
+        total_completed += completed_count
+        total_timeouts += batch_size - completed_count
         all_steps.append(steps)
         all_moves.append(moves)
         all_win_scores.append(win_scores)
+        all_completed.append(completed)
 
     elapsed_time = time.perf_counter() - start_time
     print(" done")
@@ -332,6 +346,7 @@ def run_benchmark(
     all_steps = jnp.concatenate(all_steps)
     all_moves = jnp.concatenate(all_moves)
     all_win_scores = jnp.concatenate(all_win_scores)
+    all_completed = jnp.concatenate(all_completed)
 
     games_per_second = total_games / elapsed_time
     steps_per_second = total_steps / elapsed_time
@@ -343,14 +358,20 @@ def run_benchmark(
     min_steps = int(jnp.min(all_steps))
     max_steps = int(jnp.max(all_steps))
 
-    # Count point distribution
-    games_1pt = int(jnp.sum(all_win_scores == 1))
-    games_2pt = int(jnp.sum(all_win_scores == 2))
-    games_3pt = int(jnp.sum(all_win_scores == 3))
+    # Count point distribution (only completed games)
+    if total_completed > 0:
+        completed_win_scores = all_win_scores[all_completed]
+        games_1pt = int(jnp.sum(completed_win_scores == 1))
+        games_2pt = int(jnp.sum(completed_win_scores == 2))
+        games_3pt = int(jnp.sum(completed_win_scores == 3))
+    else:
+        games_1pt = games_2pt = games_3pt = 0
 
     return BenchmarkResult(
         batch_size=batch_size,
         num_games=total_games,
+        completed_games=total_completed,
+        timeout_games=total_timeouts,
         total_steps=total_steps,
         total_moves=total_moves,
         elapsed_time=elapsed_time,
@@ -474,6 +495,7 @@ def main():
             results.append(result)
 
             print(f"  Total games: {result.num_games:,}")
+            print(f"  Completed: {result.completed_games:,} ({(result.completed_games / result.num_games * 100):.1f}%) | Timeouts: {result.timeout_games:,}")
             print(f"  Total steps: {result.total_steps:,}")
             print(f"  Total moves: {result.total_moves:,}")
             print(f"  Elapsed time: {result.elapsed_time:.2f}s")
@@ -561,6 +583,8 @@ def save_results_to_json(
             {
                 "batch_size": r.batch_size,
                 "num_games": r.num_games,
+                "completed_games": r.completed_games,
+                "timeout_games": r.timeout_games,
                 "total_steps": r.total_steps,
                 "total_moves": r.total_moves,
                 "elapsed_time": r.elapsed_time,
