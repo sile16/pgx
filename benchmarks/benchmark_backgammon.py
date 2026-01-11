@@ -17,6 +17,7 @@ import time
 import warnings
 from datetime import datetime
 from functools import partial
+import statistics
 from typing import NamedTuple
 
 # Suppress CUDA interconnect warnings
@@ -28,7 +29,8 @@ warnings.filterwarnings("ignore", message=".*GPU interconnect.*")
 import jax
 import jax.numpy as jnp
 
-from pgx.backgammon import Backgammon, State
+from pgx.backgammon import Backgammon, State as BackgammonState
+from pgx.backgammon2p import Backgammon2P
 
 class BenchmarkResult(NamedTuple):
     """Results from a benchmark run."""
@@ -134,12 +136,14 @@ def run_single_game(
     return steps, bool(state.terminated)
 
 
-def create_batched_game_loop(env: Backgammon, batch_size: int, max_steps: int = 5000):
+def create_batched_game_loop(env, batch_size: int, max_steps: int = 5000):
     """
     Create JIT-compiled functions for running batched games.
 
     Returns functions optimized for running many games in parallel using vmap.
     """
+    num_stochastic_actions = env.num_stochastic_actions
+
     init_fn = jax.jit(jax.vmap(env.init))
     step_fn = jax.jit(jax.vmap(env.step))
     stochastic_step_fn = jax.jit(jax.vmap(env.stochastic_step))
@@ -162,7 +166,7 @@ def create_batched_game_loop(env: Backgammon, batch_size: int, max_steps: int = 
 
         # For stochastic actions, select random dice roll (0-20)
         stochastic_actions = jax.vmap(
-            lambda k: jax.random.randint(k, shape=(), minval=0, maxval=21)
+            lambda k: jax.random.randint(k, shape=(), minval=0, maxval=num_stochastic_actions)
         )(keys)
 
         # Return appropriate action based on whether state is stochastic
@@ -170,51 +174,29 @@ def create_batched_game_loop(env: Backgammon, batch_size: int, max_steps: int = 
 
     @jax.jit
     def step_batch(
-        states: State,
+        states,
         actions: jnp.ndarray,
         keys: jnp.ndarray
-    ) -> State:
+    ):
         """Step a batch of states, handling both stochastic and regular steps."""
-        # Get the is_stochastic flags and terminated flags
         is_stochastic = states._is_stochastic
         was_terminated = states.terminated
 
-        # Perform both types of steps
         regular_next = step_fn(states, actions, keys)
         stochastic_next = stochastic_step_fn(states, actions)
 
-        # Select appropriate next state based on is_stochastic flag
-        # We need to do this field by field due to JAX pytree handling
-        def select_field(reg, stoch, stoch_mask):
-            # Expand mask dimensions to match field shape
-            while stoch_mask.ndim < reg.ndim:
-                stoch_mask = stoch_mask[..., jnp.newaxis]
-            return jnp.where(stoch_mask, stoch, reg)
+        def _broadcast(mask, target):
+            while mask.ndim < target.ndim:
+                mask = mask[..., jnp.newaxis]
+            return mask
 
-        # Select between stochastic and regular steps
-        def select_field_with_terminated(orig, reg, stoch, stoch_mask, term_mask):
-            # First select between stochastic and regular
-            next_val = select_field(reg, stoch, stoch_mask)
-            # Then preserve original value for already terminated games
-            while term_mask.ndim < orig.ndim:
-                term_mask = term_mask[..., jnp.newaxis]
+        def merge(orig, reg, stoch):
+            stoch_mask = _broadcast(is_stochastic, reg)
+            term_mask = _broadcast(was_terminated, reg)
+            next_val = jnp.where(stoch_mask, stoch, reg)
             return jnp.where(term_mask, orig, next_val)
 
-        return State(
-            current_player=select_field_with_terminated(states.current_player, regular_next.current_player, stochastic_next.current_player, is_stochastic, was_terminated),
-            observation=select_field_with_terminated(states.observation, regular_next.observation, stochastic_next.observation, is_stochastic, was_terminated),
-            rewards=select_field_with_terminated(states.rewards, regular_next.rewards, stochastic_next.rewards, is_stochastic, was_terminated),
-            terminated=select_field_with_terminated(states.terminated, regular_next.terminated, stochastic_next.terminated, is_stochastic, was_terminated),
-            truncated=select_field_with_terminated(states.truncated, regular_next.truncated, stochastic_next.truncated, is_stochastic, was_terminated),
-            _is_stochastic=select_field_with_terminated(states._is_stochastic, regular_next._is_stochastic, stochastic_next._is_stochastic, is_stochastic, was_terminated),
-            legal_action_mask=select_field_with_terminated(states.legal_action_mask, regular_next.legal_action_mask, stochastic_next.legal_action_mask, is_stochastic, was_terminated),
-            _step_count=select_field_with_terminated(states._step_count, regular_next._step_count, stochastic_next._step_count, is_stochastic, was_terminated),
-            _board=select_field_with_terminated(states._board, regular_next._board, stochastic_next._board, is_stochastic, was_terminated),
-            _dice=select_field_with_terminated(states._dice, regular_next._dice, stochastic_next._dice, is_stochastic, was_terminated),
-            _playable_dice=select_field_with_terminated(states._playable_dice, regular_next._playable_dice, stochastic_next._playable_dice, is_stochastic, was_terminated),
-            _played_dice_num=select_field_with_terminated(states._played_dice_num, regular_next._played_dice_num, stochastic_next._played_dice_num, is_stochastic, was_terminated),
-            _turn=select_field_with_terminated(states._turn, regular_next._turn, stochastic_next._turn, is_stochastic, was_terminated),
-        )
+        return jax.tree_map(merge, states, regular_next, stochastic_next)
 
     def game_step(carry):
         """Single step of the game loop - runs entirely in JAX."""
@@ -279,17 +261,28 @@ def create_batched_game_loop(env: Backgammon, batch_size: int, max_steps: int = 
     return run_batched_games, init_fn
 
 
+def _make_env(env_name: str, short_game: bool):
+    if env_name == "backgammon":
+        return Backgammon(short_game=short_game)
+    if env_name == "backgammon2p":
+        return Backgammon2P(short_game=short_game)
+    raise ValueError(f"Unknown env: {env_name}")
+
+
 def run_benchmark(
+    env_name: str,
     batch_size: int,
     num_batches: int = 10,
     max_steps: int = 5000,
     warmup_batches: int = 2,
-    short_game: bool = False
+    short_game: bool = False,
+    profile: bool = False
 ) -> BenchmarkResult:
     """
     Run the benchmark with the specified batch size.
 
     Args:
+        env_name: Name of the env to benchmark ("backgammon", "backgammon2p")
         batch_size: Number of games to run in parallel
         num_batches: Number of batches to run for timing
         max_steps: Maximum steps per game before timeout
@@ -299,19 +292,22 @@ def run_benchmark(
     Returns:
         BenchmarkResult with timing statistics
     """
-    env = Backgammon(short_game=short_game)
+    env = _make_env(env_name, short_game=short_game)
     run_batched_games, init_fn = create_batched_game_loop(env, batch_size, max_steps)
 
     key = jax.random.PRNGKey(42)
 
     # Warmup runs (for JIT compilation)
     print(f"  Warming up ({warmup_batches} batches)...", end="", flush=True)
+    warmup_start = time.perf_counter()
     for i in range(warmup_batches):
         key, subkey = jax.random.split(key)
         steps, moves, completed, win_scores = run_batched_games(subkey)
-        # Force computation to complete
         jax.block_until_ready(steps)
+    warmup_elapsed = time.perf_counter() - warmup_start
     print(" done")
+    if profile:
+        print(f"    Warmup time: {warmup_elapsed:.2f}s")
 
     # Timed runs
     print(f"  Running {num_batches} batches...", end="", flush=True)
@@ -321,14 +317,16 @@ def run_benchmark(
     all_steps = []
     all_moves = []
     all_win_scores = []
+    batch_times = []
 
     start_time = time.perf_counter()
 
     for i in range(num_batches):
         key, subkey = jax.random.split(key)
+        batch_start = time.perf_counter()
         steps, moves, completed, win_scores = run_batched_games(subkey)
-        # Force computation to complete before timing
         jax.block_until_ready(steps)
+        batch_times.append(time.perf_counter() - batch_start)
         total_steps += int(jnp.sum(steps))
         total_moves += int(jnp.sum(moves))
         total_games += batch_size
@@ -338,6 +336,11 @@ def run_benchmark(
 
     elapsed_time = time.perf_counter() - start_time
     print(" done")
+    if profile and batch_times:
+        print(
+            f"    Batch time (s): avg={statistics.mean(batch_times):.3f} "
+            f"min={min(batch_times):.3f} max={max(batch_times):.3f}"
+        )
 
     # Aggregate all steps, moves, and win scores
     all_steps = jnp.concatenate(all_steps)
@@ -381,6 +384,12 @@ def run_benchmark(
 def main():
     parser = argparse.ArgumentParser(description="Benchmark PGX Backgammon")
     parser.add_argument(
+        "--envs",
+        type=str,
+        default="backgammon",
+        help="Comma-separated envs to benchmark (backgammon,backgammon2p)"
+    )
+    parser.add_argument(
         "--batch-sizes",
         type=str,
         default="1,10,100,1000,10000",
@@ -420,6 +429,11 @@ def main():
         action="store_true",
         help="Quick benchmark mode: single batch size (1000), 3 batches, short game"
     )
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="Print warmup and per-batch timing details"
+    )
     args = parser.parse_args()
 
     # Quick mode overrides
@@ -429,6 +443,7 @@ def main():
         args.short_game = True
     else:
         batch_sizes = [int(x.strip()) for x in args.batch_sizes.split(",")]
+    envs = [e.strip() for e in args.envs.split(",") if e.strip()]
 
     # Print header
     print("=" * 70)
@@ -438,6 +453,7 @@ def main():
     print(f"Git Commit (short): {get_git_commit_short()}")
     print(f"Device(s): {get_device_info()}")
     print(f"JAX version: {jax.__version__}")
+    print(f"Envs: {envs}")
     print(f"Batch sizes: {batch_sizes}")
     print(f"Batches per size: {args.num_batches}")
     print(f"Max steps per game: {args.max_steps}")
@@ -445,63 +461,71 @@ def main():
     print("=" * 70)
     print()
 
-    results = []
+    all_results = {}
 
-    for batch_size in batch_sizes:
-        print(f"\nBatch size: {batch_size}")
-        print("-" * 40)
+    for env_name in envs:
+        print(f"\n===== ENV: {env_name} =====")
+        results = []
 
-        result = run_benchmark(
-            batch_size=batch_size,
-            num_batches=args.num_batches,
-            max_steps=args.max_steps,
-            warmup_batches=args.warmup_batches,
-            short_game=args.short_game
-        )
-        results.append(result)
+        for batch_size in batch_sizes:
+            print(f"\nBatch size: {batch_size}")
+            print("-" * 40)
 
-        print(f"  Total games: {result.num_games:,}")
-        print(f"  Total steps: {result.total_steps:,}")
-        print(f"  Total moves: {result.total_moves:,}")
-        print(f"  Elapsed time: {result.elapsed_time:.2f}s")
-        print(f"  Games/second: {result.games_per_second:,.1f}")
-        print(f"  Steps/second: {result.steps_per_second:,.1f}")
-        print(f"  Moves/second: {result.moves_per_second:,.1f}")
-        print(f"  Avg steps/game: {result.avg_steps_per_game:.1f} ({result.avg_moves_per_game:.1f} moves)")
-        print(f"  Min/Max steps: {result.min_steps} / {result.max_steps}")
-        print(f"  Points: 1pt={result.games_1pt}, 2pt={result.games_2pt}, 3pt={result.games_3pt}")
+            result = run_benchmark(
+                env_name=env_name,
+                batch_size=batch_size,
+                num_batches=args.num_batches,
+                max_steps=args.max_steps,
+                warmup_batches=args.warmup_batches,
+                short_game=args.short_game,
+                profile=args.profile
+            )
+            results.append(result)
 
-    # Summary table
-    print("\n" + "=" * 70)
-    print("SUMMARY")
-    print("=" * 70)
-    print(f"{'Batch Size':>12} {'Games/sec':>12} {'Steps/sec':>12} {'Moves/sec':>12} {'Time (s)':>10}")
-    print("-" * 60)
-    for r in results:
-        print(f"{r.batch_size:>12,} {r.games_per_second:>12,.1f} {r.steps_per_second:>12,.1f} {r.moves_per_second:>12,.1f} {r.elapsed_time:>10.2f}")
+            print(f"  Total games: {result.num_games:,}")
+            print(f"  Total steps: {result.total_steps:,}")
+            print(f"  Total moves: {result.total_moves:,}")
+            print(f"  Elapsed time: {result.elapsed_time:.2f}s")
+            print(f"  Games/second: {result.games_per_second:,.1f}")
+            print(f"  Steps/second: {result.steps_per_second:,.1f}")
+            print(f"  Moves/second: {result.moves_per_second:,.1f}")
+            print(f"  Avg steps/game: {result.avg_steps_per_game:.1f} ({result.avg_moves_per_game:.1f} moves)")
+            print(f"  Min/Max steps: {result.min_steps} / {result.max_steps}")
+            print(f"  Points: 1pt={result.games_1pt}, 2pt={result.games_2pt}, 3pt={result.games_3pt}")
 
-    # Find optimal batch size
-    best = max(results, key=lambda r: r.games_per_second)
-    print("-" * 60)
-    print(f"Best throughput: {best.games_per_second:,.1f} games/sec at batch size {best.batch_size:,}")
-    print("=" * 70)
+        print("\n" + "=" * 70)
+        print(f"SUMMARY ({env_name})")
+        print("=" * 70)
+        print(f"{'Batch Size':>12} {'Games/sec':>12} {'Steps/sec':>12} {'Moves/sec':>12} {'Time (s)':>10}")
+        print("-" * 60)
+        for r in results:
+            print(f"{r.batch_size:>12,} {r.games_per_second:>12,.1f} {r.steps_per_second:>12,.1f} {r.moves_per_second:>12,.1f} {r.elapsed_time:>10.2f}")
 
-    # Save to JSON if requested
+        best = max(results, key=lambda r: r.games_per_second)
+        print("-" * 60)
+        print(f"Best throughput: {best.games_per_second:,.1f} games/sec at batch size {best.batch_size:,}")
+        print("=" * 70)
+
+        all_results[env_name] = results
+
     if args.output_json:
-        save_results_to_json(
-            results=results,
-            output_path=args.output_json,
-            git_commit=get_git_commit(),
-            git_commit_short=get_git_commit_short(),
-            device_info=get_device_info(),
-            jax_version=jax.__version__,
-            short_game=args.short_game,
-            max_steps=args.max_steps,
-            num_batches=args.num_batches
-        )
+        for env_name, results in all_results.items():
+            save_results_to_json(
+                env_name=env_name,
+                results=results,
+                output_path=args.output_json,
+                git_commit=get_git_commit(),
+                git_commit_short=get_git_commit_short(),
+                device_info=get_device_info(),
+                jax_version=jax.__version__,
+                short_game=args.short_game,
+                max_steps=args.max_steps,
+                num_batches=args.num_batches
+            )
 
 
 def save_results_to_json(
+    env_name: str,
     results: list[BenchmarkResult],
     output_path: str,
     git_commit: str,
@@ -523,6 +547,7 @@ def save_results_to_json(
         "git_commit_short": git_commit_short,
         "device": device_info,
         "jax_version": jax_version,
+        "env": env_name,
         "config": {
             "short_game": short_game,
             "max_steps": max_steps,
