@@ -2,7 +2,7 @@
 import jax
 import jax.numpy as jnp
 
-from pgx.backgammon2p import Backgammon2P, _is_gammon, _calc_win_score, _is_all_off
+from pgx.backgammon2p import Backgammon2P, _is_gammon, _calc_win_score, _is_all_off, _remaining_actions_from_dice
 
 def _make_state_with_board(env, board, dice):
     state = env.init(jax.random.PRNGKey(0))
@@ -209,5 +209,8 @@ def test_doubles_action_structure():
     
     final_state = env.step(next_state, jnp.int32(action), jax.random.PRNGKey(0))
     
-    # Turn should end
-    assert final_state.current_player != state.current_player
+    # Turn should end; a fresh roll (possibly after auto-skipping) should be ready.
+    expected_remaining = int(_remaining_actions_from_dice(final_state._dice))
+    assert int(final_state._remaining_actions) == expected_remaining
+    assert not bool(final_state._is_stochastic)
+    assert bool(final_state.legal_action_mask.any())

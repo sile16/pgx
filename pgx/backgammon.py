@@ -184,6 +184,15 @@ class Backgammon(core.StochasticEnv):
         observation = self._observe(state, state.current_player)
         return state.replace(observation=observation)
 
+    def _has_playable_actions(self, state: State) -> Array:
+        non_pass = state.legal_action_mask & (~_NO_OP_MASK)
+        return non_pass.any()
+
+    def _auto_advance_no_playable(self, state: State, key: PRNGKey) -> State:
+        # Auto-pass the turn when only pass actions are available.
+        state = state.replace(_step_count=state._step_count + 1)
+        return _change_turn(state)
+
 
 # Backward compatibility alias
 BackgammonV2All = Backgammon

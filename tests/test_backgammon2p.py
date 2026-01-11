@@ -165,3 +165,57 @@ def test_mask_zero_does_not_stall(monkeypatch):
 
     assert int(next_state._remaining_actions) == 0
     assert next_state.legal_action_mask.shape == (26 * 26,)
+
+
+def test_auto_skip_turn_when_no_moves():
+    """States with only the pass action should auto-advance without requiring a pass action."""
+    env = Backgammon2P()
+    state = env.init(jax.random.PRNGKey(2))
+    pass_only_mask = jnp.zeros_like(state.legal_action_mask).at[0].set(True)
+    state = state.replace(
+        legal_action_mask=pass_only_mask,
+        _is_stochastic=jnp.array(False),
+        _remaining_actions=jnp.int32(1),
+    )
+
+    action = jnp.int32(42)  # arbitrary non-pass action
+    next_state = env.step(state, action, jax.random.PRNGKey(9))
+
+    assert not next_state.terminated
+    assert int(next_state.current_player) != int(state.current_player)
+    assert int(next_state._step_count) >= int(state._step_count) + 1
+    assert next_state.legal_action_mask.any()
+
+
+def test_step_stochastic_random_skips_pass_only(monkeypatch):
+    """Stochastic helper should auto-advance until a playable mask exists."""
+    env = Backgammon2P()
+    pass_mask = jnp.zeros(26 * 26, dtype=jnp.bool_).at[0].set(True)
+    playable_mask = jnp.zeros(26 * 26, dtype=jnp.bool_).at[5].set(True)
+
+    def fake_chance_outcomes(state):
+        return jnp.array([0], dtype=jnp.int32), jnp.array([1.0], dtype=jnp.float32)
+
+    def fake_step_stochastic(state, outcome):
+        # Always return a pass-only mask to force the auto-advance branch.
+        return state.replace(_is_stochastic=False, legal_action_mask=pass_mask)
+
+    auto_advance_calls = {"used": False}
+
+    def fake_auto_advance(state, key):
+        auto_advance_calls["used"] = True
+        # Return a playable deterministic state so the loop exits.
+        return state.replace(_is_stochastic=False, legal_action_mask=playable_mask)
+
+    monkeypatch.setattr(env, "chance_outcomes", fake_chance_outcomes)
+    monkeypatch.setattr(env, "_step_stochastic", fake_step_stochastic)
+    monkeypatch.setattr(env, "_auto_advance_no_playable", fake_auto_advance)
+
+    state = env.init(jax.random.PRNGKey(0))
+    state = state.replace(_is_stochastic=jnp.array(True))
+
+    next_state = env.step_stochastic_random(state, jax.random.PRNGKey(1))
+
+    assert auto_advance_calls["used"]
+    assert bool(next_state.legal_action_mask[5])
+    assert not bool(next_state._is_stochastic)

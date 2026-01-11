@@ -96,7 +96,27 @@ class Backgammon2P(core.StochasticEnv):
         self.init_board_fn = _make_init_board_short if short_game else _make_init_board
 
     def step(self, state: core.State, action: Array, key: Optional[Array] = None) -> core.State:
-        return super().step(state, action, key)
+        if key is None:
+            raise ValueError("Backgammon2P.step requires a PRNG key for stochastic dice rolls.")
+
+        no_moves = (~_has_playable_action(state.legal_action_mask)) & (~state._is_stochastic)
+        base_step = super(Backgammon2P, self).step
+
+        def auto_skip_turn():
+            skipped_state = _auto_skip_no_moves(self, state.replace(_step_count=state._step_count + 1), key)
+            skipped_state = jax.lax.cond(
+                skipped_state.terminated,
+                lambda: skipped_state.replace(legal_action_mask=jnp.ones_like(skipped_state.legal_action_mask)),
+                lambda: skipped_state,
+            )
+            observation = self.observe(skipped_state)
+            return skipped_state.replace(observation=observation)
+
+        return jax.lax.cond(
+            (state.terminated | state.truncated),
+            lambda: base_step(state, action, key),
+            lambda: jax.lax.cond(no_moves, auto_skip_turn, lambda: base_step(state, action, key)),
+        )
 
     def _init(self, key: PRNGKey) -> State:
         state = _init(key)
@@ -175,6 +195,14 @@ class Backgammon2P(core.StochasticEnv):
         state = self._set_dice(state, dice)
         observation = self._observe(state, state.current_player)
         return state.replace(observation=observation)
+
+    def _has_playable_actions(self, state: State) -> Array:
+        return _has_playable_action(state.legal_action_mask)
+
+    def _auto_advance_no_playable(self, state: State, key: PRNGKey) -> State:
+        # Auto-pass and flip the turn when only pass actions are available.
+        state = state.replace(_step_count=state._step_count + 1)
+        return _change_turn(state)
 
 
 # =============================================================================
@@ -765,6 +793,33 @@ def _legal_action_mask(board: Array, dice: Array) -> Array:
         lambda: _legal_action_mask_doubles(board, die1),
         lambda: _legal_action_mask_nondoubles(board, die1, die2),
     )
+
+
+def _has_playable_action(mask: Array) -> Array:
+    # Ignore the pass slot when checking for available moves.
+    non_pass_mask = mask & (~_NO_OP_ACTION_MASK)
+    return non_pass_mask.any()
+
+
+def _auto_skip_no_moves(env: Backgammon2P, state: State, key: Array) -> State:
+    """Automatically advance turns when no playable actions exist."""
+
+    def cond(carry):
+        state, key = carry
+        still_playing = ~(state.terminated | state.truncated)
+        no_moves = ~_has_playable_action(state.legal_action_mask)
+        return still_playing & no_moves
+
+    def body(carry):
+        state, key = carry
+        key, roll_key = jax.random.split(key)
+        state = state.replace(_step_count=state._step_count + 1)
+        state = _change_turn(state)
+        state = env._step_stochastic_random(state, roll_key)
+        return state, key
+
+    state, _ = jax.lax.while_loop(cond, body, (state, key))
+    return state
 
 
 def _is_no_op_mask(mask: Array) -> Array:

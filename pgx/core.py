@@ -450,17 +450,55 @@ class StochasticEnv(Env):
         """
         ...
 
+    def _has_playable_actions(self, state: State) -> Array:
+        """Return True if at least one actionable (non-pass) move exists.
+
+        Games with pass slots can override to ignore the pass entry.
+        """
+        return state.legal_action_mask.any()
+
+    def _auto_advance_no_playable(self, state: State, key: PRNGKey) -> State:
+        """Hook for games that should advance the turn when no playable actions exist."""
+        return state
+
+    def _step_stochastic_random_until_playable(
+        self,
+        state: State,
+        key: PRNGKey,
+        apply_fn,
+    ) -> State:
+        """Sample stochastic outcomes (and auto-advance if needed) until a playable state is reached."""
+
+        def sample_and_apply(s: State, subkey: PRNGKey) -> State:
+            outcomes, probs = self.chance_outcomes(s)
+            outcome = jax.random.choice(subkey, outcomes, p=probs)
+            return apply_fn(s, outcome)
+
+        def cond(carry):
+            s, _ = carry
+            no_playables = (~self._has_playable_actions(s)) & (~s.terminated) & (~s.truncated)
+            return s._is_stochastic | no_playables
+
+        def body(carry):
+            s, k = carry
+            k, sub = jax.random.split(k)
+            s = jax.lax.cond(
+                s._is_stochastic,
+                lambda: sample_and_apply(s, sub),
+                lambda: self._auto_advance_no_playable(s, sub),
+            )
+            return s, k
+
+        state, _ = jax.lax.while_loop(cond, body, (state, key))
+        return state
+
     def step_stochastic_random(self, state: State, key: PRNGKey) -> State:
-        """Helper to sample a random outcome and apply it."""
-        outcomes, probs = self.chance_outcomes(state)
-        outcome = jax.random.choice(key, outcomes, p=probs)
-        return self.step_stochastic(state, outcome)
+        """Helper to sample random outcomes (and auto-advance) until a playable state is reached."""
+        return self._step_stochastic_random_until_playable(state, key, self.step_stochastic)
 
     def _step_stochastic_random(self, state: State, key: PRNGKey) -> State:
         """Internal helper without observation update (used by _step)."""
-        outcomes, probs = self.chance_outcomes(state)
-        outcome = jax.random.choice(key, outcomes, p=probs)
-        return self._step_stochastic(state, outcome)
+        return self._step_stochastic_random_until_playable(state, key, self._step_stochastic)
 
     def _step(self, state: State, action: Array, key: PRNGKey) -> State:
         """
