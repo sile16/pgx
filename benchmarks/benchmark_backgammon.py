@@ -201,7 +201,7 @@ def create_batched_game_loop(env, batch_size: int, max_steps: int = 5000):
             next_val = jnp.where(stoch_mask, stoch, reg)
             return jnp.where(term_mask, orig, next_val)
 
-        return jax.tree_map(merge, states, regular_next, stochastic_next)
+        return jax.tree_util.tree_map(merge, states, regular_next, stochastic_next)
 
     def game_step(carry):
         """Single step of the game loop - runs entirely in JAX."""
