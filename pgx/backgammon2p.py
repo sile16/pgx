@@ -571,70 +571,48 @@ def _apply_action_branchless(board: Array, src1_idx: Array, src2_idx: Array, die
 
 def _legal_action_mask_nondoubles(board: Array, die1: Array, die2: Array) -> Array:
     # Vectorized check for all 676 actions
-    
-    # 1. Check validity of Move 1 (Die 1)
-    # legal1[i] = _is_move_legal(board, src1[i], die1)
-    # But src1[i] depends on action index.
-    # We can compute "is legal source S for die D" for all S=0..25.
+    # Optimized: Fuse parallel vmaps to reduce kernel launches
+
     base_invariants = _board_invariants(board)
-    
-    # Legal Sources for Die 1
-    legal_srcs_d1 = jax.vmap(
-        lambda s: _is_move_legal_branchless(board, s, die1, base_invariants)
-    )(_SRC_INDICES) # (26,)
-    
-    # Legal Sources for Die 2
-    legal_srcs_d2 = jax.vmap(
-        lambda s: _is_move_legal_branchless(board, s, die2, base_invariants)
-    )(_SRC_INDICES) # (26,)
-    
-    # 2. Check validity of Sequence (Die1 -> Die2)
-    # This is trickier because Board changes.
-    # We need to apply Move 1 (for all valid Sources S1) and then check Move 2 (for all Sources S2).
-    # Since we can't maintain 26 boards easily (well we can, it's small), let's do that.
-    
-    # Generate 26 next_boards (one for each possible src1)
-    # If src1 is invalid, the board doesn't matter (we won't use it), but let's keep it clean.
-    next_boards_d1 = jax.vmap(lambda s: _apply_move_branchless(board, s, die1))(_SRC_INDICES) # (26, 28)
-    next_board_inv_d1 = jax.vmap(_board_invariants)(next_boards_d1)
-    
-    # Now check legality of Die 2 on these next boards.
-    # We need a matrix: legal_seq[s1, s2]
-    # s1 is dimension 0, s2 is dimension 1.
-    
+
+    # Fused: Compute legal sources for both dice in single vmap
+    def check_both_dice(s):
+        l1 = _is_move_legal_branchless(board, s, die1, base_invariants)
+        l2 = _is_move_legal_branchless(board, s, die2, base_invariants)
+        return l1, l2
+
+    legal_both = jax.vmap(check_both_dice)(_SRC_INDICES)
+    legal_srcs_d1 = legal_both[0]  # (26,)
+    legal_srcs_d2 = legal_both[1]  # (26,)
+
+    # Fused: Compute next boards and invariants for both dice in single vmap
+    def apply_both_dice(s):
+        b1 = _apply_move_branchless(board, s, die1)
+        b2 = _apply_move_branchless(board, s, die2)
+        inv1 = _board_invariants(b1)
+        inv2 = _board_invariants(b2)
+        return b1, b2, inv1, inv2
+
+    all_next = jax.vmap(apply_both_dice)(_SRC_INDICES)
+    next_boards_d1 = all_next[0]      # (26, 28)
+    next_boards_d2 = all_next[1]      # (26, 28)
+    next_board_inv_d1 = all_next[2]   # (26, 3) - tuple of 3 arrays
+    next_board_inv_d2 = all_next[3]   # (26, 3)
+
+    # Check legality of Die 2 on boards after Die 1 move
     def check_d2_on_next(next_board, invariants):
         return jax.vmap(
             lambda s: _is_move_legal_branchless(next_board, s, die2, invariants)
         )(_SRC_INDICES)
-        
-    legal_seq_matrix = jax.vmap(check_d2_on_next)(next_boards_d1, next_board_inv_d1) # (26, 26)
-    
-    # Flatten to actions
-    legal_seq = legal_seq_matrix.reshape(26 * 26) # (676,)
-    
-    # But wait, action is (src1, src2).
-    # Action K corresponds to (src1, src2) = (_ACTION_SRC1[K], _ACTION_SRC2[K])
-    # So legal_seq[K] is exactly what we computed?
-    # Yes, row src1, col src2 corresponds to src1*26 + src2.
-    
-    # Now we have:
-    # legal1_flat: (676,) -> is src1 legal for die1?
-    # legal2_flat: (676,) -> is src2 legal for die2? (on original board)
-    # legal_seq: (676,) -> is src1 legal for die1 AND src2 legal for die2 (on next board) ?
-    # Wait, legal_seq_matrix[s1, s2] only checked if s2 is legal on next_board(s1).
-    # It didn't AND it with "s1 was legal on original board".
-    
-    # Correct logic for "Two Moves":
-    legal1_expanded = jnp.repeat(legal_srcs_d1, 26) # (676,)
+
+    legal_seq_matrix = jax.vmap(check_d2_on_next)(next_boards_d1, next_board_inv_d1)  # (26, 26)
+
+    # Flatten and combine with first move legality
+    legal_seq = legal_seq_matrix.reshape(26 * 26)
+    legal1_expanded = jnp.repeat(legal_srcs_d1, 26)
     two_moves_legal = legal1_expanded & legal_seq
-    
-    # We also need the reverse order: Die2 -> Die1
-    # legal1_rev[i] = legal src1[i] for die2
-    # legal2_rev[i] = legal src2[i] for die1 (on next board)
-    
-    legal_srcs_d1_for_d2 = legal_srcs_d2 # Reuse
-    next_boards_d2 = jax.vmap(lambda s: _apply_move_branchless(board, s, die2))(_SRC_INDICES)
-    next_board_inv_d2 = jax.vmap(_board_invariants)(next_boards_d2)
+
+    # Reverse order: Die2 -> Die1
     legal_seq_matrix_rev = jax.vmap(
         lambda nb, invariants: jax.vmap(
             lambda s: _is_move_legal_branchless(nb, s, die1, invariants)
