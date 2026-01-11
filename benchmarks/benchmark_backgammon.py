@@ -42,6 +42,11 @@ class BenchmarkResult(NamedTuple):
     games_per_second: float
     steps_per_second: float
     moves_per_second: float  # Player moves per second
+    warmup_time: float
+    batch_time_avg: float
+    batch_time_min: float
+    batch_time_max: float
+    batch_time_count: int
     # Game statistics
     avg_steps_per_game: float
     avg_moves_per_game: float
@@ -341,6 +346,10 @@ def run_benchmark(
             f"    Batch time (s): avg={statistics.mean(batch_times):.3f} "
             f"min={min(batch_times):.3f} max={max(batch_times):.3f}"
         )
+    batch_time_avg = statistics.mean(batch_times) if batch_times else 0.0
+    batch_time_min = min(batch_times) if batch_times else 0.0
+    batch_time_max = max(batch_times) if batch_times else 0.0
+    batch_time_count = len(batch_times)
 
     # Aggregate all steps, moves, and win scores
     all_steps = jnp.concatenate(all_steps)
@@ -371,6 +380,11 @@ def run_benchmark(
         games_per_second=games_per_second,
         steps_per_second=steps_per_second,
         moves_per_second=moves_per_second,
+        warmup_time=warmup_elapsed,
+        batch_time_avg=batch_time_avg,
+        batch_time_min=batch_time_min,
+        batch_time_max=batch_time_max,
+        batch_time_count=batch_time_count,
         avg_steps_per_game=avg_steps_per_game,
         avg_moves_per_game=avg_moves_per_game,
         min_steps=min_steps,
@@ -489,6 +503,13 @@ def main():
             print(f"  Games/second: {result.games_per_second:,.1f}")
             print(f"  Steps/second: {result.steps_per_second:,.1f}")
             print(f"  Moves/second: {result.moves_per_second:,.1f}")
+            if args.profile:
+                print(
+                    f"  Warmup: {result.warmup_time:.2f}s | "
+                    f"Batch time (s) avg/min/max: {result.batch_time_avg:.3f}/"
+                    f"{result.batch_time_min:.3f}/{result.batch_time_max:.3f} "
+                    f"({result.batch_time_count} batches)"
+                )
             print(f"  Avg steps/game: {result.avg_steps_per_game:.1f} ({result.avg_moves_per_game:.1f} moves)")
             print(f"  Min/Max steps: {result.min_steps} / {result.max_steps}")
             print(f"  Points: 1pt={result.games_1pt}, 2pt={result.games_2pt}, 3pt={result.games_3pt}")
@@ -569,6 +590,11 @@ def save_results_to_json(
                 "games_per_second": r.games_per_second,
                 "steps_per_second": r.steps_per_second,
                 "moves_per_second": r.moves_per_second,
+                "warmup_time": r.warmup_time,
+                "batch_time_avg": r.batch_time_avg,
+                "batch_time_min": r.batch_time_min,
+                "batch_time_max": r.batch_time_max,
+                "batch_time_count": r.batch_time_count,
                 "avg_steps_per_game": r.avg_steps_per_game,
                 "avg_moves_per_game": r.avg_moves_per_game,
                 "min_steps": r.min_steps,
