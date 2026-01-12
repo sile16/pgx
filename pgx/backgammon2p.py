@@ -570,120 +570,131 @@ def _apply_action_branchless(board: Array, src1_idx: Array, src2_idx: Array, die
 
 
 def _legal_action_mask_nondoubles(board: Array, die1: Array, die2: Array) -> Array:
-    # Vectorized check for all 676 actions
-    # Optimized: Fuse parallel vmaps to reduce kernel launches
+    """
+    Tensorized legal action mask for non-doubles.
+    Uses outer product + sparse corrections instead of simulating 26 board updates.
+    This eliminates VRAM writes, keeping computation in registers/L1 cache.
+    """
+    base_inv = _board_invariants(board)
+    bar_clear, all_on_home, rear_dist = base_inv
 
-    base_invariants = _board_invariants(board)
+    # Step 1: Compute independent legality for each die (read-only, no board modification)
+    legal_d1 = jax.vmap(lambda s: _is_move_legal_branchless(board, s, die1, base_inv))(_SRC_INDICES)
+    legal_d2 = jax.vmap(lambda s: _is_move_legal_branchless(board, s, die2, base_inv))(_SRC_INDICES)
 
-    # Fused: Compute legal sources for both dice in single vmap
-    def check_both_dice(s):
-        l1 = _is_move_legal_branchless(board, s, die1, base_invariants)
-        l2 = _is_move_legal_branchless(board, s, die2, base_invariants)
-        return l1, l2
+    # Step 2: Outer product - base joint legality (assumes moves don't interact)
+    joint_fwd = legal_d1[:, None] & legal_d2[None, :]  # (26, 26) - [s1, s2]
+    joint_rev = legal_d2[:, None] & legal_d1[None, :]  # (26, 26) - [s2, s1] for reverse order
 
-    legal_both = jax.vmap(check_both_dice)(_SRC_INDICES)
-    legal_srcs_d1 = legal_both[0]  # (26,)
-    legal_srcs_d2 = legal_both[1]  # (26,)
+    # Step 3: Apply corrections for move interactions
 
-    # Fused: Compute next boards and invariants for both dice in single vmap
-    def apply_both_dice(s):
-        b1 = _apply_move_branchless(board, s, die1)
-        b2 = _apply_move_branchless(board, s, die2)
-        inv1 = _board_invariants(b1)
-        inv2 = _board_invariants(b2)
-        return b1, b2, inv1, inv2
+    # Get checker count at each source
+    def get_checker_count(src_idx):
+        src = _src_from_idx(src_idx)
+        src_safe = jnp.clip(src, 0, 27)
+        is_valid = src >= 0
+        return jnp.where(is_valid, board[src_safe], 0)
 
-    all_next = jax.vmap(apply_both_dice)(_SRC_INDICES)
-    next_boards_d1 = all_next[0]      # (26, 28)
-    next_boards_d2 = all_next[1]      # (26, 28)
-    next_board_inv_d1 = all_next[2]   # (26, 3) - tuple of 3 arrays
-    next_board_inv_d2 = all_next[3]   # (26, 3)
+    checker_counts = jax.vmap(get_checker_count)(_SRC_INDICES)
 
-    # Check legality of Die 2 on boards after Die 1 move
-    def check_d2_on_next(next_board, invariants):
-        return jax.vmap(
-            lambda s: _is_move_legal_branchless(next_board, s, die2, invariants)
-        )(_SRC_INDICES)
+    # Correction 1: Same source needs 2+ checkers
+    same_source_mask = jnp.eye(26, dtype=bool)
+    needs_two = same_source_mask & (checker_counts[:, None] < 2)
+    joint_fwd = joint_fwd & ~needs_two
+    joint_rev = joint_rev & ~needs_two
 
-    legal_seq_matrix = jax.vmap(check_d2_on_next)(next_boards_d1, next_board_inv_d1)  # (26, 26)
+    # Correction 2: Bar clearing enables moves
+    bar_idx = 1
+    bar_has_one = board[24] == 1
+    inv_bar_clear = (True, all_on_home, rear_dist)
 
-    # Flatten and combine with first move legality
-    legal_seq = legal_seq_matrix.reshape(26 * 26)
-    legal1_expanded = jnp.repeat(legal_srcs_d1, 26)
-    two_moves_legal = legal1_expanded & legal_seq
+    legal_d2_if_bar_clear = jax.vmap(
+        lambda s: _is_move_legal_branchless(board, s, die2, inv_bar_clear)
+    )(_SRC_INDICES)
+    newly_legal_d2 = legal_d2_if_bar_clear & ~legal_d2
+    bar_clear_enables = (jnp.arange(26) == bar_idx)[:, None] & bar_has_one & newly_legal_d2[None, :]
+    joint_fwd = joint_fwd | (legal_d1[:, None] & bar_clear_enables)
 
-    # Reverse order: Die2 -> Die1
-    legal_seq_matrix_rev = jax.vmap(
-        lambda nb, invariants: jax.vmap(
-            lambda s: _is_move_legal_branchless(nb, s, die1, invariants)
-        )(_SRC_INDICES)
-    )(next_boards_d2, next_board_inv_d2)
-    
-    # Here, index (s1, s2) means src1=s1, src2=s2.
-    # But the move order is src2 (Die2) THEN src1 (Die1).
-    # So we check: src2 legal for Die2? AND src1 legal for Die1 (after src2 move).
-    # legal_seq_matrix_rev[s2, s1] ?? No.
-    # next_boards_d2[s] is board after moving s with Die2.
-    # We want to know if action (s1, s2) is legal.
-    # Action (s1, s2) means s1 uses Die1, s2 uses Die2.
-    # Reverse order execution: Move s2 with Die2. Then Move s1 with Die1.
-    # So we need: is s2 legal for Die2? AND is s1 legal for Die1 (on next_boards_d2[s2])?
-    
-    # legal_srcs_d2[s2] is check 1.
-    # legal_seq_matrix_rev[s2, s1] is check 2.
-    
-    # We need to construct mask for action (s1, s2).
-    # Flattening legal_seq_matrix_rev gives index s2*26 + s1.
-    # But our actions are s1*26 + s2.
-    # So we need to transpose legal_seq_matrix_rev before flattening.
-    
-    legal2_expanded = jnp.tile(legal_srcs_d2, 26) # (676,) ? No.
-    # tile repeats the whole array: [0,1..25, 0,1..25 ...]
-    # This corresponds to s2 varying fast, s1 varying slow. Correct.
-    
-    legal_seq_rev_transposed = legal_seq_matrix_rev.T # (26, 26) -> (s1, s2)
-    legal_seq_rev = legal_seq_rev_transposed.reshape(26 * 26)
-    
-    two_moves_rev_legal = legal2_expanded & legal_seq_rev
-    
-    # Total "Both" Legal
-    can_play_both_mask = two_moves_legal | two_moves_rev_legal
+    legal_d1_if_bar_clear = jax.vmap(
+        lambda s: _is_move_legal_branchless(board, s, die1, inv_bar_clear)
+    )(_SRC_INDICES)
+    newly_legal_d1 = legal_d1_if_bar_clear & ~legal_d1
+    bar_clear_enables_rev = (jnp.arange(26) == bar_idx)[:, None] & bar_has_one & newly_legal_d1[None, :]
+    joint_rev = joint_rev | (legal_d2[:, None] & bar_clear_enables_rev)
+
+    # Correction 3: Chain moves - target of first becomes source of second
+    tgt_d1 = jax.vmap(lambda s: _tgt_from_idx_die(s, die1))(_SRC_INDICES)
+    tgt_d2 = jax.vmap(lambda s: _tgt_from_idx_die(s, die2))(_SRC_INDICES)
+
+    def tgt_to_src_idx(tgt):
+        return jnp.where((tgt >= 0) & (tgt <= 23), tgt + 2, -1)
+
+    tgt_d1_as_src_idx = jax.vmap(tgt_to_src_idx)(tgt_d1)
+    tgt_d2_as_src_idx = jax.vmap(tgt_to_src_idx)(tgt_d2)
+
+    chain_fwd = (tgt_d1_as_src_idx[:, None] == _SRC_INDICES[None, :])
+    src_has_zero = checker_counts == 0
+
+    def check_tgt_open_d2(s2_idx):
+        tgt = _tgt_from_idx_die(s2_idx, die2)
+        tgt_safe = jnp.clip(tgt, 0, 27)
+        is_to_point = (tgt >= 0) & (tgt <= 23)
+        is_to_off = (tgt == 26)
+        tgt_open = board[tgt_safe] >= -1
+        return (is_to_point & tgt_open) | (is_to_off & all_on_home)
+
+    s2_tgt_ok = jax.vmap(check_tgt_open_d2)(_SRC_INDICES)
+    s2_not_bar = _SRC_INDICES != bar_idx
+    s1_is_bar = (jnp.arange(26) == bar_idx)  # s1 indices that are bar
+    # Bar is clear after s1 moves if: bar was already clear OR s1 is the bar (clears it by moving off)
+    bar_clear_after_s1 = bar_clear | s1_is_bar[:, None]
+    chain_enable_fwd = legal_d1[:, None] & chain_fwd & src_has_zero[None, :] & s2_tgt_ok[None, :]
+    chain_enable_fwd = chain_enable_fwd & (bar_clear_after_s1 | ~s2_not_bar[None, :])
+    joint_fwd = joint_fwd | chain_enable_fwd
+
+    chain_rev = (tgt_d2_as_src_idx[:, None] == _SRC_INDICES[None, :])
+
+    def check_tgt_open_d1(s1_idx):
+        tgt = _tgt_from_idx_die(s1_idx, die1)
+        tgt_safe = jnp.clip(tgt, 0, 27)
+        is_to_point = (tgt >= 0) & (tgt <= 23)
+        is_to_off = (tgt == 26)
+        tgt_open = board[tgt_safe] >= -1
+        return (is_to_point & tgt_open) | (is_to_off & all_on_home)
+
+    s1_tgt_ok = jax.vmap(check_tgt_open_d1)(_SRC_INDICES)
+    s1_not_bar = _SRC_INDICES != bar_idx
+    s2_is_bar = (jnp.arange(26) == bar_idx)  # s2 indices that are bar
+    # Bar is clear after s2 moves if: bar was already clear OR s2 is the bar (clears it by moving off)
+    bar_clear_after_s2 = bar_clear | s2_is_bar[:, None]
+    chain_enable_rev = legal_d2[:, None] & chain_rev & src_has_zero[None, :] & s1_tgt_ok[None, :]
+    chain_enable_rev = chain_enable_rev & (bar_clear_after_s2 | ~s1_not_bar[None, :])
+    joint_rev = joint_rev | chain_enable_rev
+
+    # Convert reverse order matrix to action order and combine
+    joint_rev_transposed = joint_rev.T
+    can_play_both_mask = (joint_fwd | joint_rev_transposed).reshape(26 * 26)
     can_play_both = can_play_both_mask.any()
-    
-    # "Single" Legal Logic:
-    # If we can play both, mask is can_play_both_mask.
-    # If we can't play both, we must check single moves.
-    # Condition:
-    # If can_play_d1 (any move), allow (s1, Pass) where s1 is legal.
-    # If can_play_d2 (any move), allow (Pass, s2) where s2 is legal.
-    
-    can_play_d1 = legal_srcs_d1.any()
-    can_play_d2 = legal_srcs_d2.any()
-    
-    # Construct masks for single moves
-    # (s1, Pass) -> s2 is 0. Mask is legal_srcs_d1[s1] AND s2==0.
+
+    # Single move logic
+    can_play_d1 = legal_d1.any()
+    can_play_d2 = legal_d2.any()
+
     s2_is_pass = _ACTION_SRC2 == 0
     s1_is_pass = _ACTION_SRC1 == 0
-    
+
+    legal1_expanded = jnp.repeat(legal_d1, 26)
+    legal2_expanded = jnp.tile(legal_d2, 26)
+
     single_d1_mask = legal1_expanded & s2_is_pass
-    single_d2_mask = legal2_expanded & s1_is_pass # legal2_expanded corresponds to legal_srcs_d2[s2]
-    
-    # Final Logic
-    # If can_play_both is true, we ignore single_mask.
-    # Else, if we can play higher die (die2), we MUST play it (if we can't play both).
-    # Since dice are sorted (die1 <= die2), preference is for die2.
-    
-    # Note: If die1 == die2, it falls into doubles logic, so here die1 < die2.
-    
+    single_d2_mask = legal2_expanded & s1_is_pass
+
     single_mask = jnp.where(can_play_d2, single_d2_mask, single_d1_mask)
-    
     final_mask = jnp.where(can_play_both, can_play_both_mask, single_mask)
-    
-    # Handle the "No Moves" case
-    # If final_mask is all false, allow (0,0)
+
     no_moves = ~final_mask.any()
-    pass_action = (s1_is_pass & s2_is_pass)
-    
+    pass_action = s1_is_pass & s2_is_pass
+
     return jnp.where(no_moves, pass_action, final_mask)
 
 
